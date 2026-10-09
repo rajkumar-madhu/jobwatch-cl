@@ -4,9 +4,10 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI
+from sqlalchemy import text
 
 from . import events
-from .db import system_session
+from .db import engine, system_session
 from .routers import agents, heartbeat, k8s
 from .workers.platform_health import INGEST_HEARTBEAT_S, heartbeat as platform_heartbeat
 
@@ -56,3 +57,12 @@ app.include_router(k8s.agent)
 @app.get("/healthz")
 def healthz():
     return {"status": "ok", "nats": getattr(app.state, "js", None) is not None and events.is_connected()}
+
+
+@app.get("/readyz")
+def readyz():
+    """Unlike the API, broker-down stays Ready: the router falls back to inline processing. A
+    database outage does not, so a replica that cannot record pings is taken out of rotation."""
+    with engine.connect() as c:
+        c.execute(text("SELECT 1"))
+    return {"status": "ready", "nats": getattr(app.state, "js", None) is not None and events.is_connected()}

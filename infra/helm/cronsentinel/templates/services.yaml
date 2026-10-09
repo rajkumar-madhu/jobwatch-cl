@@ -54,7 +54,7 @@ spec:
       http:
         paths:
           {{- /* Single-host installs share the app host, so claim only ingest's routes, never "/". */}}
-          {{- $paths := ternary (list "/api/v1/heartbeat" "/ping" "/heartbeat" "/agent") (list "/") $singleHost }}
+          {{- $paths := ternary (list "/api/v1/heartbeat" "/ping" "/heartbeat" "/agent" "/hc" "/cronitor") (list "/") $singleHost }}
           {{- range $paths }}
           - {path: {{ . }}, pathType: Prefix, backend: {service: {name: {{ include "cs.fullname" $ }}-ingest, port: {number: 8010}}}}
           {{- end }}
