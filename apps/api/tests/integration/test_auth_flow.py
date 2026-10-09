@@ -55,7 +55,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(404); self.end_headers()
 
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        _state["token_form"] = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
         return self._json({"access_token": "at", "id_token": _state["id_token"], "token_type": "Bearer"})
 
     def log_message(self, *a):
@@ -121,6 +121,21 @@ def test_callback_verifies_token_and_sets_session(client):
         row = s.execute(text("SELECT keycloak_sub FROM users WHERE email='u@example.test'")).first()
         assert row and row.keycloak_sub == "kc-sub-1"
         s.execute(text("DELETE FROM users WHERE email='u@example.test'"))
+
+
+def test_login_uses_pkce_and_callback_sends_the_matching_verifier(client):
+    """A Keycloak client with PKCE required answered every login with
+    error=invalid_request "Missing parameter: code_challenge_method"."""
+    import base64
+    import hashlib
+    r = client.get("/auth/login", params={"next": "/jobs"})
+    q = parse_qs(urlparse(r.headers["location"]).query)
+    assert q["code_challenge_method"] == ["S256"]
+    _state["id_token"] = _id_token(q["nonce"][0])
+    assert client.get("/auth/callback", params={"code": "c", "state": q["state"][0]}).status_code in (302, 307)
+    verifier = _state["token_form"]["code_verifier"][0]
+    assert base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode() == q["code_challenge"][0]
+    _cleanup_user()
 
 
 def test_replayed_state_is_rejected(client):
