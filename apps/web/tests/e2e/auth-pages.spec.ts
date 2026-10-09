@@ -1,4 +1,8 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Route } from "@playwright/test";
+
+// The API is cross-origin from the web app, so a fulfilled response still needs the CORS headers.
+const signedOut = (r: Route) => r.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"not signed in"}',
+  headers: { "access-control-allow-origin": r.request().headers()["origin"] ?? "*", "access-control-allow-credentials": "true" } });
 
 // R51: sign-in and sign-up only choose a route; credentials are entered on Keycloak.
 // The mock API (tools/ui-review) offers three social providers and says @acme.com has SSO.
@@ -42,5 +46,21 @@ test.describe("auth pages", () => {
     await page.goto("/welcome");
     await expect(page.getByRole("link", { name: "Start monitoring free" }).first()).toHaveAttribute("href", "/signup");
     await expect(page.getByRole("link", { name: "Sign in" }).first()).toHaveAttribute("href", "/login");
+  });
+
+  test("signed-out visitors are sent to sign-in instead of an empty dashboard", async ({ page }) => {
+    await page.route("**/auth/session", signedOut);
+    await page.goto("/jobs?status=failed");
+    await expect(page).toHaveURL(/\/login\?next=%2Fjobs%3Fstatus%3Dfailed$/);
+    await expect(page.getByRole("heading", { name: "Sign in to JobWatch" })).toBeVisible();
+  });
+
+  test("an API key or the Settings page gets past the sign-in gate", async ({ page }) => {
+    await page.route("**/auth/session", signedOut);
+    await page.goto("/settings");
+    await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+    await page.evaluate(() => localStorage.setItem("cs_api_key", "cs_test.key"));
+    await page.goto("/jobs");
+    await expect(page).toHaveURL(/\/jobs$/);
   });
 });
