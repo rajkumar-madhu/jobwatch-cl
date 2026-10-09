@@ -1,0 +1,10 @@
+.git
+.venv
+**/.venv
+**/node_modules
+**/.next
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+**/.DS_Store
+docs/screenshots

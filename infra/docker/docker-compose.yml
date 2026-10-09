@@ -1,0 +1,117 @@
+x-api-env: &api-env
+  # App/workers connect as the non-superuser role created by migration 0007 so RLS applies.
+  # The owner URL is only used by the `migrate` service below.
+  DATABASE_URL: postgresql+psycopg://jobwatch_app:jobwatch_app@postgres:5432/cronsentinel
+  REDIS_URL: redis://redis:6379/0
+  NATS_URL: nats://nats:4222
+  KEYCLOAK_ISSUER: http://keycloak:8080/realms/cronsentinel
+  KEYCLOAK_AUDIENCE: cronsentinel-web
+  KEYCLOAK_CLIENT_ID: cronsentinel-web
+  KEYCLOAK_CLIENT_SECRET: change-me
+  KEYCLOAK_ADMIN_CLIENT_SECRET: change-me-admin
+  AUTH_SOCIAL_PROVIDERS: google,github,microsoft   # R51: identity providers present in infra/keycloak-realm.json   # R43: SSO admin client from infra/keycloak-realm.json (dev only)
+  # Required. Generate once: echo "SECRET_ENCRYPTION_KEY=$(openssl rand -base64 48)" >> .env
+  # The API refuses to start on an empty/placeholder/short value (cronsentinel/keys.py).
+  SECRET_ENCRYPTION_KEY: "${SECRET_ENCRYPTION_KEY:?set SECRET_ENCRYPTION_KEY in .env (openssl rand -base64 48)}"
+  API_PUBLIC_URL: http://localhost:8000
+  WEB_PUBLIC_URL: http://localhost:3000
+  COPILOT_BASE_URL: http://ollama:11434
+  # R18 SSRF guard. Compose is the single-tenant/self-hosted path, where webhooks to internal
+  # services are normal, so this is on. A multi-tenant deploy must leave it false.
+  OUTBOUND_ALLOW_PRIVATE: "${OUTBOUND_ALLOW_PRIVATE:-true}"
+  COPILOT_MODEL: qwen2.5:14b
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cronsentinel
+      POSTGRES_PASSWORD: cronsentinel
+      POSTGRES_DB: cronsentinel
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U cronsentinel"], interval: 5s, retries: 10}
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222"]
+    ports: ["4222:4222", "8222:8222"]
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    command: ["start-dev", "--import-realm"]
+    environment: {KEYCLOAK_ADMIN: admin, KEYCLOAK_ADMIN_PASSWORD: admin}
+    volumes: ["../keycloak-realm.json:/opt/keycloak/data/import/realm.json:ro"]
+    ports: ["8080:8080"]
+  migrate:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.api}
+    command: alembic upgrade head
+    environment:
+      <<: *api-env
+      DATABASE_URL: postgresql+psycopg://cronsentinel:cronsentinel@postgres:5432/cronsentinel   # owner
+      JOBWATCH_APP_DB_PASSWORD: jobwatch_app   # dev only; set a real one outside compose
+    depends_on:
+      postgres: {condition: service_healthy}
+  api:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.api}
+    command: uvicorn cronsentinel.main:app --host 0.0.0.0 --port 8000
+    environment: *api-env
+    ports: ["8000:8000"]
+    depends_on: {postgres: {condition: service_healthy}}
+  ingest:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.api}
+    # R22: ingest is one uvicorn process by default — on the test box it saturated one core at
+    # ~190 pings/s or ~1.4k events/s (batched). INGEST_WORKERS adds processes. Multi-worker was NOT
+    # measured (1 vCPU sandbox); each worker opens its own NATS connection and DB pool (10 + 20).
+    command: sh -c "uvicorn cronsentinel.ingest_main:app --host 0.0.0.0 --port 8010 --workers $${INGEST_WORKERS:-1}"
+    environment: *api-env
+    ports: ["8010:8010"]
+    depends_on: [api]
+  exec-processor:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.api}
+    command: python -m cronsentinel.workers.exec_processor
+    environment: *api-env
+    depends_on: [api]
+  schedule-generator:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.api}
+    command: python -m cronsentinel.workers.schedule_generator
+    environment: *api-env
+    depends_on: [api]
+  outbound-exporter:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.api}
+    command: python -m cronsentinel.workers.outbound_exporter
+    environment: *api-env
+    depends_on: [api]
+  reconciler:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.api}
+    command: python -m cronsentinel.workers.reconciler
+    environment: *api-env
+    depends_on: [api]
+  rule-engine:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.api}
+    command: python -m cronsentinel.workers.rule_engine
+    environment: *api-env
+    depends_on: [api]
+  notifier:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.api}
+    command: celery -A cronsentinel.celery_app.celery worker -Q notify -l info --concurrency 4
+    environment: *api-env
+    depends_on: [redis]
+  web:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.web, args: {NEXT_PUBLIC_API_URL: http://localhost:8000}}
+    ports: ["3000:3000"]
+    depends_on: [api]
+  scorer:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.api}
+    command: python -m cronsentinel.workers.scorer
+    environment: *api-env
+    depends_on: [api]
+  ollama:   # self-hosted Copilot model (D12). `docker compose exec ollama ollama pull qwen2.5:14b`
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]
+    volumes: [ollama:/root/.ollama]
+    profiles: [ai]
+volumes:
+  pgdata: {}
+  ollama: {}

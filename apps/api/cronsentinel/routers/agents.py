@@ -1,0 +1,344 @@
+"""Agent enrollment/management (admin API) + agent-facing ingest endpoints (X-Agent-Key)."""
+import json
+import secrets
+from datetime import UTC, datetime
+from uuid import UUID
+
+import redis
+from starlette.concurrency import run_in_threadpool
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import BaseModel, Field
+from sqlalchemy import text
+
+from .. import oncalendar, pingtokens, ratelimit, schedule
+from ..assertions import clean_metrics
+from ..auth import (
+    Principal,
+    _inet,
+    audit,
+    current_principal,
+    hash_secret,
+    require_role,
+    needs_rehash,
+    verify_secret,
+)
+from ..config import settings
+from ..db import system_session, tenant_session
+from ..schemas import AgentOut
+
+admin = APIRouter(prefix="/api/v1/agents", tags=["agents"])
+agent = APIRouter(prefix="/agent/v1", tags=["agent-ingest"])
+installer = APIRouter(tags=["agent-ingest"])   # R62: <ingest>/agent/install.sh
+
+
+@installer.get("/agent/install.sh", include_in_schema=False)
+def install_script():
+    """The Linux agent installer with this server's defaults filled in (cronsentinel/agentinstall.py)."""
+    from fastapi.responses import PlainTextResponse
+
+    from .. import agentinstall
+    if (why := agentinstall.problem()):
+        return PlainTextResponse(f"JobWatch cannot serve the agent installer: {why}\n", status_code=503)
+    return PlainTextResponse(agentinstall.render(), media_type="text/x-shellscript",
+                             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+_r = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+
+
+# ---------- admin ----------
+class BootstrapIn(BaseModel):
+    name: str | None = None
+    ttl_hours: int = Field(24, ge=1, le=168)
+
+
+@admin.post("/bootstrap-token", status_code=201)
+def bootstrap_token(body: BootstrapIn, request: Request, p: Principal = Depends(require_role("devops"))):
+    tok = "csb_" + secrets.token_urlsafe(24)
+    _r.setex(f"bootstrap:{tok}", body.ttl_hours * 3600, json.dumps({"org_id": str(p.org_id), "name": body.name}))
+    with tenant_session(p.org_id) as s:
+        audit(s, p, "agent.bootstrap_token", "agent", tok[:12], ip=request.client.host)
+    # R62: a real command when the installer can be served; otherwise say what is missing
+    from .. import agentinstall
+    return {"token": tok, "expires_in_s": body.ttl_hours * 3600, "install": agentinstall.install_command(tok),
+            "install_problem": agentinstall.problem()}
+
+
+@admin.get("", response_model=list[AgentOut])
+def list_agents(p: Principal = Depends(current_principal)):
+    with tenant_session(p.org_id) as s:
+        rows = s.execute(text("SELECT id, kind, name, host_id, version, status, last_seen_at, skew_ms, revoked_at, created_at, "
+                              "(SELECT count(*) FROM jobs j WHERE j.server_id IN (SELECT id FROM servers WHERE agent_id=agents.id)) AS jobs FROM agents ORDER BY name")).all()
+    return [dict(r._mapping) for r in rows]
+
+
+@admin.post("/{agent_id}/rotate")
+def rotate(agent_id: UUID, request: Request, p: Principal = Depends(require_role("devops"))):
+    raw = "csa_" + secrets.token_urlsafe(32)
+    with tenant_session(p.org_id) as s:
+        n = s.execute(text("UPDATE agents SET key_hash=:h, key_prefix=:pfx WHERE id=:id AND revoked_at IS NULL"), {"h": hash_secret(raw), "pfx": raw[:12], "id": str(agent_id)}).rowcount
+        if not n: raise HTTPException(404)
+        audit(s, p, "agent.rotate", "agent", str(agent_id), ip=request.client.host)
+    _r.delete(f"agentkey:{agent_id}")
+    return {"agent_key": raw, "note": "update /etc/cronsentinel/agent.json and restart agent"}
+
+
+@admin.post("/{agent_id}/revoke", status_code=204)
+def revoke(agent_id: UUID, request: Request, p: Principal = Depends(require_role("devops"))):
+    with tenant_session(p.org_id) as s:
+        if not s.execute(text("UPDATE agents SET revoked_at=now(), status='revoked' WHERE id=:id"), {"id": str(agent_id)}).rowcount: raise HTTPException(404)
+        audit(s, p, "agent.revoke", "agent", str(agent_id), ip=request.client.host)
+    _r.delete(f"agentkey:{agent_id}")
+
+
+# ---------- agent-facing ----------
+class EnrollIn(BaseModel):
+    bootstrap_token: str = Field(max_length=128)
+    name: str = Field(min_length=1, max_length=255)
+    host_id: str = Field(min_length=1, max_length=255)
+    kind: str = Field(default="linux", pattern="^(linux|k8s)$")
+    version: str = Field(default="unknown", max_length=64)
+
+
+@agent.post("/enroll")
+def enroll(body: EnrollIn, request: Request):
+    ip = request.client.host if request.client else "unknown"
+    ratelimit.check(f"enroll:{ip}", 10, request)
+    # R39: GETDEL, not GET … DELETE at the end. Two concurrent enrolls with the same "one-time"
+    # token both passed the GET and both received a long-lived agent key.
+    raw = _r.getdel(f"bootstrap:{body.bootstrap_token}")
+    if not raw: raise HTTPException(401, "invalid or expired bootstrap token")
+    meta = json.loads(raw); org = meta["org_id"]
+    key = "csa_" + secrets.token_urlsafe(32)
+    with system_session() as s:
+        existing = s.execute(text("SELECT id FROM agents WHERE org_id=:o AND host_id=:h AND revoked_at IS NULL"), {"o": org, "h": body.host_id}).first()
+        if existing:  # re-enroll same host: rotate key in place
+            aid = existing.id
+            s.execute(text("UPDATE agents SET key_hash=:h, key_prefix=:p, name=:n, version=:v, status='active', last_seen_at=now() WHERE id=:id"),
+                      {"h": hash_secret(key), "p": key[:12], "n": meta.get("name") or body.name, "v": body.version, "id": aid})
+        else:
+            aid = s.execute(text("INSERT INTO agents (org_id, kind, host_id, name, version, key_hash, key_prefix, status, last_seen_at) "
+                                 "VALUES (:o, :k, :h, :n, :v, :kh, :kp, 'active', now()) RETURNING id"),
+                            {"o": org, "k": body.kind, "h": body.host_id, "n": meta.get("name") or body.name, "v": body.version, "kh": hash_secret(key), "kp": key[:12]}).scalar()
+            s.execute(text("INSERT INTO servers (org_id, agent_id, hostname) VALUES (:o, :a, :h) ON CONFLICT (org_id, hostname) DO UPDATE SET agent_id=EXCLUDED.agent_id"),
+                      {"o": org, "a": aid, "h": body.name})
+        s.execute(text("INSERT INTO audit_logs (org_id, actor_type, action, target_type, target_id, ip) VALUES (:o, 'agent', 'agent.enroll', 'agent', :a, :ip)"),
+                  {"o": org, "a": str(aid), "ip": _inet(ip)})
+    return {"agent_id": str(aid), "agent_key": key}
+
+
+def agent_principal(request: Request, x_agent_key: str = Header(...), x_agent_id: str = Header(...)) -> dict:
+    try:
+        x_agent_id = str(UUID(x_agent_id))   # a non-UUID id used to reach Postgres and 500
+    except ValueError:
+        raise HTTPException(401, "unknown or revoked agent") from None
+    cached = _r.get(f"agentkey:{x_agent_id}")
+    if cached:
+        h, org = cached.split("|", 1)
+    else:
+        with system_session() as s:
+            row = s.execute(text("SELECT key_hash, org_id FROM agents WHERE id=:id AND revoked_at IS NULL"), {"id": x_agent_id}).first()
+        if not row: raise HTTPException(401, "unknown or revoked agent")
+        h, org = row.key_hash, str(row.org_id)
+        _r.setex(f"agentkey:{x_agent_id}", 300, f"{h}|{org}")
+    if not verify_secret(x_agent_key, h): raise HTTPException(401, "invalid agent key")
+    if needs_rehash(h):  # R21: upgrade a pre-R21 argon2 hash once; every later request is a SHA-256 compare
+        new_hash = hash_secret(x_agent_key)
+        with system_session() as s:
+            s.execute(text("UPDATE agents SET key_hash=:h WHERE id=:id AND revoked_at IS NULL"), {"h": new_hash, "id": x_agent_id})
+        _r.setex(f"agentkey:{x_agent_id}", 300, f"{new_hash}|{org}")
+    ratelimit.check(f"agent:{x_agent_id}", settings.ingest_rate_per_min, request)
+    return {"agent_id": x_agent_id, "org_id": org}
+
+
+class DiscoveredJob(BaseModel):
+    fingerprint: str = Field(max_length=128)
+    kind: str = Field(max_length=32)
+    name: str = Field(max_length=200)
+    schedule: str | None = Field(default="", max_length=256)
+    command: str = Field(max_length=8192)
+    user: str = Field(max_length=64)
+    source: str = Field(max_length=1024)
+    working_dir: str | None = Field(default=None, max_length=1024)
+    # R53: systemd timers — RandomizedDelaySec + AccuracySec. None means an agent too old to report it.
+    timer_slack_s: int | None = Field(default=None, ge=0, le=7 * 86400)
+
+
+class DiscoveryIn(BaseModel):
+    jobs: list[DiscoveredJob] = Field(max_length=5000)
+
+
+@agent.post("/discovery")
+def discovery(body: DiscoveryIn, a: dict = Depends(agent_principal)):
+    """Upsert jobs by fingerprint (D7). New fingerprints create jobs in the default workspace; existing ones refresh metadata."""
+    org, aid = a["org_id"], a["agent_id"]
+    matched = 0
+    with system_session() as s:
+        srv = s.execute(text("SELECT id FROM servers WHERE org_id=:o AND agent_id=:a LIMIT 1"), {"o": org, "a": aid}).first()
+        ws = s.execute(text("SELECT id FROM workspaces WHERE org_id=:o ORDER BY created_at LIMIT 1"), {"o": org}).scalar()
+        lim = s.execute(text("SELECT pl.max_jobs, (SELECT count(*) FROM jobs WHERE org_id=:o) AS n FROM organizations x JOIN plan_limits pl ON pl.plan=x.plan WHERE x.id=:o"), {"o": org}).first()
+        if lim is None:
+            raise HTTPException(409, "organization has no plan limits configured")
+        if ws is None:
+            raise HTTPException(409, "organization has no workspace")
+        n = lim.n
+        seen = set()
+        for j in body.jobs:
+            seen.add(j.fingerprint)
+            sched = j.schedule or None
+            tz, extra_grace, translated = "UTC", 0, False
+            if sched and not schedule.validate(sched):
+                # R53: systemd timers arrive as TimersCalendar / TimersMonotonic properties. Translate the
+                # forms cron can express exactly (checked against systemd-analyze in tests); otherwise the
+                # job stays without a schedule, as before, until someone sets one.
+                tr = oncalendar.translate(sched)
+                if j.kind == "systemd" and j.timer_slack_s is None:
+                    # Without the timer's randomized delay (certbot: up to 12 h) a cron slot would flag
+                    # legitimate runs as late or missed. Agents before R53 do not report it: leave those
+                    # timers unscheduled, as before, rather than raise false alerts.
+                    tr = {"cron": None, "tz": None, "extra_grace_s": 0}
+                sched, translated = tr["cron"], bool(tr["cron"])
+                extra_grace = tr["extra_grace_s"] + (j.timer_slack_s or 0)
+                tz = tr["tz"] or "UTC"
+            row = s.execute(text("SELECT id, schedule_expr FROM jobs WHERE org_id=:o AND fingerprint=:f"), {"o": org, "f": j.fingerprint}).first()
+            if row:
+                s.execute(text("UPDATE jobs SET command=:c, run_as_user=:u, working_dir=:wd, server_id=COALESCE(:srv, server_id), updated_at=now() WHERE id=:id"),
+                          {"c": j.command, "u": j.user, "wd": j.working_dir, "srv": srv.id if srv else None, "id": row.id})
+                # A native cron line is the source of truth and always refreshes the schedule. A translated
+                # systemd schedule only fills an empty one: it must never overwrite a schedule a person set
+                # by hand while the timer had none. Slots start from now — no backlog of "missed" runs from
+                # before the schedule was known.
+                if sched and (not translated or row.schedule_expr is None) and sched != row.schedule_expr:
+                    s.execute(text("""UPDATE jobs SET schedule_expr=:sch, tz=:tz, grace_s=GREATEST(grace_s, :g),
+                                      next_expected_at=:nx, generated_through=now() WHERE id=:id"""),
+                              {"sch": sched, "tz": tz, "g": extra_grace, "nx": schedule.next_run(sched, tz), "id": row.id})
+                matched += 1
+                continue
+            if lim.max_jobs is not None and n >= lim.max_jobs:
+                continue  # plan cap: surfaced via /api/v1/agents list + TODO: discovery_skipped counter
+            name = j.name
+            k = 1
+            while s.execute(text("SELECT 1 FROM jobs WHERE workspace_id=:w AND name=:n"), {"w": ws, "n": name}).first():
+                k += 1; name = f"{j.name}-{k}"
+            _raw, tok_hash, tok_hint = pingtokens.new_token()   # agents report by fingerprint; the raw token is never needed
+            s.execute(text(
+                "INSERT INTO jobs (org_id, workspace_id, name, kind, source, fingerprint, heartbeat_token_hash, heartbeat_token_hint, schedule_expr, tz, grace_s, command, run_as_user, working_dir, server_id, status, next_expected_at, tags) "
+                "VALUES (:o, :w, :n, :k, 'agent', :f, :th, :thint, :sch, :tz, GREATEST(:g, 300), :c, :u, :wd, :srv, :st, :nx, ARRAY['discovered'])"),
+                {"o": org, "w": ws, "n": name, "k": j.kind, "f": j.fingerprint, "th": tok_hash, "thint": tok_hint, "sch": sched, "tz": tz, "g": extra_grace,
+                 "c": j.command, "u": j.user, "wd": j.working_dir,
+                 "srv": srv.id if srv else None, "st": "healthy" if sched else "unknown", "nx": schedule.next_run(sched, tz) if sched else None})
+            matched += 1; n += 1
+        s.execute(text("UPDATE agents SET last_seen_at=now() WHERE id=:a"), {"a": aid})
+        # TODO: jobs previously discovered by this agent but absent now → flag 'possibly removed' (not auto-deleted)
+    # R41: ping tokens are stored hashed, so they can no longer be handed back here. Agents already
+    # fall back to the fingerprint (which the server resolves per org); `tokens` stays for wire
+    # compatibility with deployed agents and is always empty.
+    return {"tokens": {}, "count": matched}
+
+
+def _ts_or_none(v):
+    """A malformed agent timestamp used to fail the whole batch insert with a 500."""
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00")) if v else None
+    except ValueError:
+        return None
+
+
+class EventsIn(BaseModel):
+    events: list[dict] = Field(max_length=500)
+
+
+@agent.post("/events")
+async def events(body: EventsIn, request: Request, a: dict = Depends(agent_principal)):
+    """Batch of wrapper/passive events. Resolves job by token or fingerprint, publishes to NATS.
+
+    R22 (ingest load test): this used to open a DB session, run one lookup query *per event*, and
+    keep the session — and its pooled connection — open across every `await js.publish`. A
+    50-event batch took ~1.5 s and pinned a connection the whole time, so ~30 concurrent agent
+    flushes exhausted the pool (10 + 20 overflow). Now all tokens and fingerprints resolve in two
+    queries inside a threadpool (off the event loop), the connection is released, and only then is
+    anything published. Publishing stays sequential on purpose: one batch can carry start and
+    success for the same execution, and the processor should see them in order.
+    """
+    org, aid = a["org_id"], a["agent_id"]
+    now = datetime.now(UTC)
+    # R39: events are untyped dicts from the agent; drop anything that is not an object, and bound
+    # the fields that get persisted (tails are trimmed again in the processor to the log limit).
+    evs = [e for e in body.events if isinstance(e, dict)]
+    toks = sorted({e["job_token"] for e in evs if e.get("job_token")})
+    fps = sorted({e["fingerprint"] for e in evs if e.get("fingerprint")})
+    progress = [e for e in evs if e.get("kind") == "progress" and isinstance(e.get("execution_id"), str)
+                and len(e["execution_id"]) <= 128]
+    js = request.app.state.js
+
+    def _resolve() -> tuple[dict, dict]:
+        with system_session() as s:
+            hashed = {pingtokens.hash_token(t): t for t in toks}
+            by_tok = {hashed[h]: jid for h, jid in s.execute(
+                text("SELECT heartbeat_token_hash, id FROM jobs WHERE org_id=:o AND heartbeat_token_hash = ANY(:t)"),
+                {"o": org, "t": list(hashed)}).all()} if toks else {}
+            by_fp = dict(s.execute(text("SELECT fingerprint, id FROM jobs WHERE org_id=:o AND fingerprint = ANY(:f)"),
+                                   {"o": org, "f": fps}).all()) if fps else {}
+            if progress:
+                s.execute(text("INSERT INTO execution_events (org_id, execution_id, agent_id, sequence, kind, agent_ts, payload) "
+                               "VALUES (:o, :eid, :a, :seq, 'progress', :ts, '{}') ON CONFLICT DO NOTHING"),
+                          [{"o": org, "eid": e["execution_id"], "a": aid, "seq": e.get("sequence", 0), "ts": _ts_or_none(e.get("agent_ts"))} for e in progress])
+            s.execute(text("UPDATE agents SET last_seen_at=now() WHERE id=:a"), {"a": aid})
+        return by_tok, by_fp
+
+    by_tok, by_fp = await run_in_threadpool(_resolve)
+    accepted = dropped = 0
+    out = []
+    for e in evs:
+        job_id = by_tok.get(e.get("job_token")) or by_fp.get(e.get("fingerprint"))
+        if not job_id:
+            dropped += 1; continue  # unknown job: wait for next discovery cycle
+        kind = e.get("kind")
+        if kind == "progress":
+            accepted += 1; continue  # stored above
+        out.append({"org_id": org, "job_id": str(job_id), "agent_id": aid, "kind": kind, "execution_id": e.get("execution_id"),
+                    "sequence": e.get("sequence", 0), "agent_ts": e.get("agent_ts"), "server_ts": now.isoformat(),
+                    "duration_ms": e.get("duration_ms"), "exit_code": e.get("exit_code"), "host": e.get("host"),
+                    "stdout_tail": e.get("stdout_tail"), "stderr_tail": e.get("stderr_tail"),
+                    "meta": {**(e.get("meta") or {}), "env_var_names": e.get("env_var_names") or []},
+                    "metrics": clean_metrics(e.get("metrics") if isinstance(e.get("metrics"), dict) else {})})   # R54
+        accepted += 1
+    if js is not None:
+        for ev in out:
+            await js.publish(f"exec.{org}", json.dumps(ev).encode())
+    elif out:  # no broker (tests / degraded mode): process inline, still off the event loop
+        def _inline():
+            from ..processor import process
+            with system_session() as s:
+                for ev in out:
+                    process(s, ev)
+        await run_in_threadpool(_inline)
+    return {"accepted": accepted, "dropped": dropped}
+
+
+@agent.post("/metrics")
+def metrics(body: dict, a: dict = Depends(agent_principal)):
+    with system_session() as s:
+        srv = s.execute(text("SELECT id FROM servers WHERE org_id=:o AND agent_id=:a LIMIT 1"), {"o": a["org_id"], "a": a["agent_id"]}).first()
+        if not srv: raise HTTPException(409, "no server bound to agent")
+        s.execute(text("INSERT INTO host_metrics (org_id, server_id, ts, cpu_pct, mem_pct, load1, disk_pct, inode_pct, io_wait_ms) "
+                       "VALUES (:o, :s, :ts, :cpu, :mem, :l1, :disk, :ino, :iow) ON CONFLICT DO NOTHING"),
+                  {"o": a["org_id"], "s": srv.id, "ts": body.get("ts") or datetime.now(UTC), "cpu": body.get("cpu_pct"), "mem": body.get("mem_pct"),
+                   "l1": body.get("load1"), "disk": body.get("disk_pct"), "ino": body.get("inode_pct"), "iow": body.get("io_wait_pct")})
+    return {"ok": True}
+
+
+@agent.post("/heartbeat")
+def agent_heartbeat(body: dict, a: dict = Depends(agent_principal)):
+    skew = 0
+    if body.get("agent_ts"):
+        try:
+            skew = int((datetime.now(UTC) - datetime.fromisoformat(body["agent_ts"].replace("Z", "+00:00"))).total_seconds() * 1000)
+        except Exception:
+            pass
+    with system_session() as s:
+        # R3 open item: agents report their own heartbeat interval so "offline" is per-agent (3× interval), not a fixed 10 min
+        hb = body.get("heartbeat_interval_s")
+        hb = int(hb) if isinstance(hb, (int, float)) and 10 <= hb <= 3600 else None
+        s.execute(text("UPDATE agents SET last_seen_at=now(), version=COALESCE(:v, version), skew_ms=:sk, status='active', "
+                       "heartbeat_interval_s=COALESCE(:hb, heartbeat_interval_s) WHERE id=:a"),
+                  {"v": body.get("version"), "sk": skew, "hb": hb, "a": a["agent_id"]})
+    return {"ok": True, "skew_ms": skew, "server_ts": datetime.now(UTC).isoformat()}

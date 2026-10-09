@@ -1,0 +1,48 @@
+{
+  "name": "cronsentinel-web",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "node .next/standalone/server.js",
+    "lint": "next lint",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "types:gen": "openapi-typescript openapi.json -o lib/api-types.ts --default-non-nullable=false",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.1.0",
+    "@fontsource/ibm-plex-sans": "^5.1.0",
+    "@fontsource/playfair-display": "^5.3.0",
+    "@fontsource/space-grotesk": "^5.3.0",
+    "@tanstack/react-query": "5.62.0",
+    "clsx": "2.1.1",
+    "cmdk": "1.0.4",
+    "date-fns": "4.1.0",
+    "lucide-react": "0.468.0",
+    "marked": "^14.1.4",
+    "next": "15.5.27",
+    "react": "19.0.8",
+    "react-dom": "19.0.8",
+    "recharts": "2.15.0",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@types/node": "22.10.1",
+    "@types/react": "19.0.1",
+    "@vitest/coverage-v8": "^2.1.8",
+    "autoprefixer": "10.4.20",
+    "jsdom": "^25.0.1",
+    "openapi-typescript": "^7.4.4",
+    "postcss": "8.5.28",
+    "tailwindcss": "3.4.16",
+    "typescript": "5.7.2",
+    "vitest": "^2.1.8",
+    "wait-on": "8.0.1"
+  },
+  "overrides": {
+    "postcss": "$postcss"
+  }
+}

@@ -1,0 +1,155 @@
+/* R16: fonts are self-hosted via @fontsource (imported in app/layout.tsx) — no render-time call to
+   fonts.googleapis.com, so air-gapped / self-hosted deploys make no third-party request. */
+@tailwind base; @tailwind components; @tailwind utilities;
+
+/* R60 design system — "timetable". JobWatch is about time slots and whether expected runs happened,
+   so the palette borrows from departure boards and station signage: navy ink, signage blue for the one
+   primary action and the "now" marker, and status colours tuned so each passes WCAG 4.5:1 as text on
+   every surface in every theme (checked numerically). Running is violet so it never reads as a link.
+   Light is the default theme (set before paint by app/layout.tsx); :root keeps the dark values as the
+   no-JavaScript fallback. Surfaces step up: canvas → panel → raised → line. */
+:root, .dark {
+  --bg: 13 20 36;      /* #0D1424 night navy canvas */
+  --panel: 19 28 48;   /* #131C30 */
+  --raised: 26 37 64;  /* #1A2540 hover / selected / inputs */
+  --line: 39 52 85;    /* #273455 */
+  --ink: 230 235 245;     /* #E6EBF5 */
+  --mute: 151 163 188;    /* #97A3BC — 6.7:1 on panel */
+  --accent: 142 166 255;  /* #8EA6FF signage blue, night */
+  --on-accent: 13 20 36;
+  --ok: 76 195 138; --bad: 241 124 124; --warn: 233 174 87; --run: 183 156 255;
+  --glow: 142 166 255;
+}
+.light {
+  --bg: 243 245 249; --panel: 255 255 255; --raised: 236 240 246; --line: 213 220 231;
+  --ink: 20 33 61;     /* #14213D navy ink, 16:1 */
+  --mute: 86 97 121;    /* #566179, 6.2:1 */
+  --accent: 35 70 200;  /* #2346C8 signage blue, 7.6:1 */
+  --on-accent: 255 255 255;
+  --ok: 18 122 75; --bad: 192 43 43; --warn: 154 88 0; --run: 107 63 196;
+  --glow: 35 70 200;
+}
+/* Obsidian Gold — the CSM Silks palette, offered as a third theme (R44). Approximated from the
+   CSM Silks reference portal's design language; replace these values with the site's exact tokens
+   when available. Warm ivory text, gold accent, desaturated status colours kept legible. */
+.gold {
+  --bg: 11 11 13;        /* #0B0B0D obsidian */
+  --panel: 20 19 23;     /* #141317 */
+  --raised: 29 27 33;    /* #1D1B21 */
+  --line: 46 41 50;      /* #2E2932 */
+  --ink: 243 237 226;    /* #F3EDE2 ivory */
+  --mute: 166 157 142;   /* #A69D8E — 7.4:1 on obsidian */
+  --accent: 201 165 76;  /* #C9A54C gold */
+  --on-accent: 20 16 8;
+  --ok: 134 184 140; --bad: 214 120 110; --warn: 222 176 98; --run: 165 178 224;
+  --glow: 201 165 76;
+}
+.gold h1, .gold h2 { font-family: "Playfair Display", "Space Grotesk", Georgia, serif; letter-spacing: -0.005em; }
+/* Light theme: the sidebar is a navy signage panel, like a station's wayfinding board. Tokens are
+   re-scoped inside it, so every child (text, icons, hover, active, theme toggle) follows without
+   per-element overrides. All pairs pass WCAG 4.5:1 (ink 14.2, mute 7.7, accent 7.9 on the panel). */
+.light .app-sidebar {
+  --bg: 15 26 49; --panel: 20 33 61; --raised: 31 46 82; --line: 44 61 102;
+  --ink: 238 242 250; --mute: 169 180 203; --accent: 157 179 255; --on-accent: 20 33 61;
+  --bad: 255 154 154;
+  color-scheme: dark; color: rgb(var(--ink));
+}
+html { color-scheme: dark; } html.light { color-scheme: light; }
+body { @apply bg-bg text-ink font-sans text-[14px] leading-[1.5] antialiased; }
+/* timetable numerals: times, durations and counts line up in columns */
+.row, table, dd, .tnum, .strip, [data-tnum] { font-variant-numeric: tabular-nums; }
+h1, h2, h3, .font-display { font-family: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif; letter-spacing: -0.015em; }
+::selection { background: rgb(var(--accent) / .3); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+:focus-visible { outline: 2px solid rgb(var(--accent)); outline-offset: 2px; border-radius: 6px; }
+
+/* Status dot: the single visual grammar used everywhere for job/execution state. */
+.dot { @apply inline-block h-2 w-2 rounded-full align-middle; }
+.dot-healthy, .dot-success, .dot-recovered { background: rgb(var(--ok)); }
+.dot-failed, .dot-timeout { background: rgb(var(--bad)); }
+.dot-late, .dot-missed { background: rgb(var(--warn)); }
+.dot-running { background: rgb(var(--run)); animation: pulse 1.6s ease-in-out infinite; }
+.dot-paused, .dot-unknown, .dot-scheduled { background: rgb(var(--mute)); opacity: .5; }
+@keyframes pulse { 50% { opacity: .35; } }
+
+/* Run strip: proportional history bars (the memorable element). */
+.strip { display: flex; gap: 2px; height: 22px; align-items: flex-end; }
+.strip > i { flex: 1 1 0; min-width: 3px; border-radius: 2px; background: rgb(var(--mute) / .25); transition: transform .12s; }
+.strip > i:hover { transform: scaleY(1.15); }
+.strip > i.success { background: rgb(var(--ok)); } .strip > i.failed, .strip > i.timeout { background: rgb(var(--bad)); }
+.strip > i.missed { background: rgb(var(--warn)); } .strip > i.running { background: rgb(var(--run)); }
+
+.row { @apply grid items-center gap-4 border-b border-line px-4 py-2.5; }
+.tbl { overflow-x: auto; }
+.tbl > .row[class*="px"], .tbl > * > .row[class*="px"] { min-width: 640px; }  /* only wide multi-column tables scroll; simple 1fr_auto lists stay fluid */
+.tbl > .row:last-child { border-bottom: 0; }
+.row:hover { background: rgb(var(--raised) / .6); }
+.th { @apply text-mute text-xs; }
+@media (max-width: 640px) { .mx-auto.max-w-\[1200px\] { padding-left: 1rem; padding-right: 1rem; } }
+/* Radius hierarchy: controls 6px, cards 10px, overlays 14px. Flat surfaces; shadow only for things
+   that float above the page. */
+.btn { @apply inline-flex items-center justify-center gap-1.5 border border-line bg-panel px-3 py-1.5 text-sm font-medium text-ink transition-colors hover:border-mute/50 hover:bg-raised disabled:cursor-not-allowed disabled:opacity-50; border-radius: 6px; }
+.btn-primary { @apply border-accent bg-accent hover:bg-accent; color: rgb(var(--on-accent)); }
+.btn-primary:hover { filter: brightness(1.08); }
+.light .btn-primary:hover { filter: brightness(0.92); }
+.card { @apply border border-line bg-panel; border-radius: 10px; }
+.overlay { border-radius: 14px; box-shadow: 0 1px 2px rgb(0 0 0 / .06), 0 18px 48px -16px rgb(0 0 0 / .28); }
+.input { @apply w-full border border-line bg-panel px-3 py-2 text-sm text-ink placeholder:text-mute/80 focus:border-accent focus:outline-none; border-radius: 6px; }
+.dark .input, :root:not(.light):not(.gold) .input { background: rgb(var(--raised)); }
+.input:focus { box-shadow: 0 0 0 3px rgb(var(--accent) / .18); }
+.kbd { @apply rounded border border-line bg-bg px-1.5 font-mono text-[11px] text-mute; }
+.skeleton { @apply animate-pulse rounded bg-line/60; }
+
+
+/* Schedule tape (landing hero + job page): expected slots vs what actually ran. */
+.tape-slot { position: absolute; top: 50%; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 2px; }
+.tape-slot.ok { background: rgb(var(--ok)); }
+.tape-slot.late { background: rgb(var(--warn)); }
+.tape-slot.failed { background: rgb(var(--bad)); }
+.tape-slot.missed { width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px; background: rgb(var(--bad) / .12); border: 2px dashed rgb(var(--bad)); box-shadow: 0 0 0 5px rgb(var(--bad) / .12); }
+.tape-slot.expected { background: transparent; border: 1.5px solid rgb(var(--mute) / .55); }
+.tape-now { position: absolute; top: -6px; bottom: -6px; width: 2px; margin-left: -1px; background: rgb(var(--accent)); }
+.tape-now-label::before {   /* one label, on the first row, inside the tape (the reveal animation clips anything outside) */
+  content: "now"; position: absolute; top: 6px; left: 5px; padding: 0 5px; border-radius: 4px;
+  background: rgb(var(--accent)); color: rgb(var(--on-accent)); font: 600 10px/16px "IBM Plex Sans", system-ui, sans-serif; letter-spacing: .02em; }
+@keyframes tape-in { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+.tape-reveal { animation: tape-in 1.4s cubic-bezier(.2,.7,.2,1) both; }
+
+/* R59 — docs content (rendered Markdown). */
+.doc-content { line-height: 1.7; font-size: 15.5px; color: rgb(var(--ink)); }
+.doc-content > * + * { margin-top: 1rem; }
+.doc-content h2 { margin-top: 2.5rem; font-family: var(--font-display, inherit); font-size: 1.45rem; font-weight: 600; scroll-margin-top: 5rem; position: relative; }
+.doc-content h3 { margin-top: 1.75rem; font-size: 1.1rem; font-weight: 600; scroll-margin-top: 5rem; position: relative; }
+.doc-content .anchor { position: absolute; left: -1.1rem; color: rgb(var(--mute)); opacity: 0; text-decoration: none; }
+.doc-content h2:hover .anchor, .doc-content h3:hover .anchor { opacity: 1; }
+.doc-content a { color: rgb(var(--accent)); text-decoration: underline; text-underline-offset: 2px; }
+.doc-content ul { list-style: disc; padding-left: 1.4rem; } .doc-content ol { list-style: decimal; padding-left: 1.4rem; }
+.doc-content li + li { margin-top: .3rem; }
+.doc-content code { font-family: var(--font-mono, ui-monospace, monospace); font-size: .86em; background: rgb(var(--raised)); border: 1px solid rgb(var(--line)); border-radius: 4px; padding: .05rem .3rem; }
+.doc-content pre { overflow-x: auto; background: rgb(var(--panel)); border: 1px solid rgb(var(--line)); border-radius: 8px; padding: .9rem 1rem; font-size: 13px; line-height: 1.55; }
+.doc-content pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+.doc-content .table-wrap { overflow-x: auto; border: 1px solid rgb(var(--line)); border-radius: 8px; }
+.doc-content table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.doc-content th { text-align: left; font-weight: 600; background: rgb(var(--panel)); }
+.doc-content th, .doc-content td { padding: .5rem .75rem; border-top: 1px solid rgb(var(--line)); vertical-align: top; }
+.doc-content thead th { border-top: 0; }
+.doc-content blockquote { border-left: 3px solid rgb(var(--accent)); padding-left: 1rem; color: rgb(var(--mute)); }
+/* long inline URLs and tokens wrap on phones instead of widening the page */
+.doc-content :not(pre) > code { overflow-wrap: anywhere; word-break: break-word; }
+.doc-content p, .doc-content li { overflow-wrap: anywhere; }
+
+/* R61 — docs: callouts (GitHub-style > [!NOTE]), code blocks with a copy button. */
+.doc-content .callout { border: 1px solid rgb(var(--line)); border-left-width: 4px; border-radius: 8px; padding: .75rem 1rem; background: rgb(var(--panel)); }
+.doc-content .callout > * + * { margin-top: .5rem; }
+.doc-content .callout-title { font-weight: 600; font-size: 13px; margin: 0; }
+.doc-content .callout-note, .doc-content .callout-tip { border-left-color: rgb(var(--accent)); }
+.doc-content .callout-note .callout-title, .doc-content .callout-tip .callout-title { color: rgb(var(--accent)); }
+.doc-content .callout-important { border-left-color: rgb(var(--run)); }
+.doc-content .callout-important .callout-title { color: rgb(var(--run)); }
+.doc-content .callout-warning { border-left-color: rgb(var(--warn)); background: rgb(var(--warn) / .06); }
+.doc-content .callout-warning .callout-title { color: rgb(var(--warn)); }
+.doc-content .code-block { position: relative; }
+.doc-content .code-block pre { padding-right: 4.5rem; }
+.doc-content .copy-btn { position: absolute; top: .5rem; right: .5rem; border: 1px solid rgb(var(--line)); border-radius: 6px; background: rgb(var(--raised));
+  color: rgb(var(--ink)); font: 500 12px/1 "IBM Plex Sans", system-ui, sans-serif; padding: .35rem .55rem; opacity: .85; }
+.doc-content .copy-btn:hover, .doc-content .copy-btn:focus-visible { opacity: 1; border-color: rgb(var(--accent)); }

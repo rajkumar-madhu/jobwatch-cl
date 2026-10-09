@@ -1,0 +1,91 @@
+{
+  "realm": "cronsentinel",
+  "enabled": true,
+  "displayName": "WeCrew JobWatch",
+  "sslRequired": "external",
+  "registrationAllowed": true,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "verifyEmail": true,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 10,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "defaultSignatureAlgorithm": "RS256",
+  "clients": [
+    {
+      "clientId": "cronsentinel-web",
+      "name": "JobWatch web",
+      "description": "Confidential, server-side authorization-code client. Backs apps/api/cronsentinel/routers/auth.py: the API exchanges the code for tokens itself, so the secret never reaches a browser.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "redirectUris": [
+        "http://localhost:8000/auth/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "post.logout.redirect.uris": "http://localhost:3000"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "email",
+        "profile"
+      ],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "identity provider",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.session.note": "identity_provider",
+            "claim.name": "idp",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "jobwatch-admin",
+      "name": "JobWatch identity-provider admin (R43)",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "attributes": {}
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-jobwatch-admin",
+      "enabled": true,
+      "serviceAccountClientId": "jobwatch-admin",
+      "clientRoles": {
+        "realm-management": [
+          "manage-identity-providers",
+          "view-identity-providers"
+        ]
+      }
+    }
+  ],
+  "registrationEmailAsUsername": true
+}

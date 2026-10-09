@@ -1,0 +1,19 @@
+server: https://ingest.example.com
+clusterName: production
+bootstrapToken: ""          # one-time. The enrolled identity is saved to the state volume (agent.key);
+                            # it survives container restarts, and pod rescheduling only with persistence
+                            # enabled — otherwise copy it into existingSecret after the first run.
+existingSecret: ""          # Secret with keys CS_AGENT_ID, CS_AGENT_KEY (preferred for restarts)
+scope: cluster              # cluster | namespaces
+namespaces: []              # used when scope=namespaces
+insecureSkipTLS: false
+persistence:                # keeps the enrolled identity across pod rescheduling (bootstrap mode)
+  enabled: true
+  size: 16Mi
+  storageClass: ""
+image:
+  repository: ghcr.io/cronsentinel/k8s-agent
+  tag: 0.1.0
+resources:
+  requests: {cpu: 20m, memory: 48Mi}
+  limits: {cpu: 200m, memory: 128Mi}

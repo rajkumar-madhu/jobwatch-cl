@@ -1,0 +1,45 @@
+{{- range $s := list (dict "n" "api" "p" 8000) (dict "n" "ingest" "p" 8010) (dict "n" "web" "p" 3000) }}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: {{ include "cs.fullname" $ }}-{{ $s.n }}, namespace: {{ $.Release.Namespace }}}
+spec: {selector: {app: {{ include "cs.fullname" $ }}-{{ $s.n }}}, ports: [{port: {{ $s.p }}, targetPort: {{ $s.p }}}]}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+# R49: two Ingresses, because the two hosts need different edge limits. The app host keeps a per-IP
+# limit; the ingest host must not inherit it — one server running many cron jobs pings from one IP,
+# and at the top of the hour 100+ jobs fire together (same failure mode as the R47 app-level bug).
+# Ingest is protected per job by the application's own rate limiter instead.
+metadata: {name: {{ include "cs.fullname" . }}, namespace: {{ .Release.Namespace }}, annotations: {nginx.ingress.kubernetes.io/limit-rps: {{ .Values.ingress.appLimitRps | quote }}}}
+spec:
+  tls: [{hosts: [{{ .Values.domain }}], secretName: {{ include "cs.fullname" . }}-tls}]
+  rules:
+    - host: {{ .Values.domain }}
+      http:
+        paths:
+          # API prefixes. /scim (R44) was missing, so SCIM requests reached the web app and 404ed.
+          {{- range list "/api" "/auth" "/public" "/scim" }}
+          - {path: {{ . }}, pathType: Prefix, backend: {service: {name: {{ include "cs.fullname" $ }}-api, port: {number: 8000}}}}
+          {{- end }}
+          - {path: /, pathType: Prefix, backend: {service: {name: {{ include "cs.fullname" . }}-web, port: {number: 3000}}}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "cs.fullname" . }}-ingest
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    nginx.ingress.kubernetes.io/limit-rps: {{ .Values.ingress.ingestLimitRps | quote }}
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+spec:
+  tls: [{hosts: [{{ .Values.ingestDomain }}], secretName: {{ include "cs.fullname" . }}-ingest-tls}]
+  rules:
+    - host: {{ .Values.ingestDomain }}
+      http: {paths: [{path: /, pathType: Prefix, backend: {service: {name: {{ include "cs.fullname" . }}-ingest, port: {number: 8010}}}}]}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: {{ include "cs.fullname" . }}-ingest, namespace: {{ .Release.Namespace }}}
+spec: {scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ include "cs.fullname" . }}-ingest}, minReplicas: {{ .Values.replicas.ingest }}, maxReplicas: 20, metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 60}}}]}

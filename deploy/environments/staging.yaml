@@ -1,0 +1,8 @@
+# R49 — staging. Non-secret settings only; secrets and per-environment URLs come from the deploy
+# workflow (GitHub Environment "staging"). Smaller than production on purpose.
+replicas: {api: 1, ingest: 1, web: 1, execProcessor: 1, reconciler: 1, scheduleGenerator: 1, outboundExporter: 1, ruleEngine: 1, notifier: 1, scorer: 1}
+nats: {replicas: 1, storage: 2Gi}
+env:
+  COOKIE_SECURE: "true"
+  OUTBOUND_ALLOW_PRIVATE: "false"
+  COPILOT_ALLOW_EXTERNAL: "false"

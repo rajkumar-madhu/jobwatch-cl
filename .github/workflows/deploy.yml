@@ -1,0 +1,157 @@
+# R49 — build images, deploy to a Kubernetes environment with Helm, smoke-test the result.
+#
+# Runs on a version tag (v*) for staging, or by hand for any environment. Production should be a
+# GitHub Environment with required reviewers, so a deploy waits for approval.
+#
+# One-time setup per GitHub Environment (Settings → Environments → <name>):
+#   variables  DOMAIN, INGEST_DOMAIN           e.g. jobwatch-staging.example.com, ingest.jobwatch-staging.example.com
+#              KEYCLOAK_ISSUER                 https://sso.example.com/realms/cronsentinel
+#              NAMESPACE (default jobwatch)    RELEASE (default jobwatch)
+#   secrets    KUBECONFIG_B64                  base64 kubeconfig for a deploy service account (namespace-scoped)
+#              DATABASE_URL, MIGRATION_DATABASE_URL, APP_DB_PASSWORD
+#              SECRET_ENCRYPTION_KEY           openssl rand -base64 48 — never change it after first deploy
+#              KEYCLOAK_CLIENT_SECRET, KEYCLOAK_ADMIN_CLIENT_SECRET (from deploy/keycloak/import.sh)
+#              REDIS_URL (optional), STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET (optional)
+#              SMOKE_PING_TOKEN (optional)     ping token of a job kept for smoke tests
+# See docs/DEPLOY.md.
+name: deploy
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "GitHub Environment to deploy to"
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+
+permissions:
+  contents: write     # attach agent binaries to the GitHub release on tags
+  packages: write     # push images to GHCR
+
+concurrency:
+  group: deploy-${{ github.event.inputs.environment || 'staging' }}
+  cancel-in-progress: false   # never interrupt a Helm upgrade half way
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+  TAG: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'staging' }}
+    strategy:
+      matrix:
+        include:
+          - {name: api, context: ., file: infra/docker/Dockerfile.api}
+          - {name: web, context: ., file: infra/docker/Dockerfile.web}
+          - {name: k8s-agent, context: agents/k8s-agent, file: agents/k8s-agent/Dockerfile}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      - name: Build and push ${{ matrix.name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: true
+          tags: ${{ env.REGISTRY }}/jobwatch-${{ matrix.name }}:${{ env.TAG }}
+          # The web bundle bakes in its public URLs, so it is built per environment.
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://${{ vars.DOMAIN }}
+            NEXT_PUBLIC_INGEST_URL=https://${{ vars.INGEST_DOMAIN }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  agent-release:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "1.23"}
+      - run: cd agents/linux-agent && make release VERSION=${{ github.ref_name }}
+      - name: Attach Linux agent binaries and SHA256SUMS to the release
+        env: {GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+        run: |
+          gh release view "${{ github.ref_name }}" >/dev/null 2>&1 || gh release create "${{ github.ref_name }}" --generate-notes
+          gh release upload "${{ github.ref_name }}" agents/linux-agent/dist/* --clobber
+
+  deploy:
+    needs: images
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'staging' }}
+    env:
+      NAMESPACE: ${{ vars.NAMESPACE || 'jobwatch' }}
+      RELEASE: ${{ vars.RELEASE || 'jobwatch' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with: {version: v3.16.2}
+      - name: Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl version --client=true
+      - name: Helm upgrade (migrations run first, as a pre-upgrade hook)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+          APP_DB_PASSWORD: ${{ secrets.APP_DB_PASSWORD }}
+          SECRET_ENCRYPTION_KEY: ${{ secrets.SECRET_ENCRYPTION_KEY }}
+          KEYCLOAK_CLIENT_SECRET: ${{ secrets.KEYCLOAK_CLIENT_SECRET }}
+          KEYCLOAK_ADMIN_CLIENT_SECRET: ${{ secrets.KEYCLOAK_ADMIN_CLIENT_SECRET }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          for v in DATABASE_URL MIGRATION_DATABASE_URL APP_DB_PASSWORD SECRET_ENCRYPTION_KEY; do
+            [ -n "${!v}" ] || { echo "::error::secret $v is not set for this environment"; exit 1; }
+          done
+          # Secrets go through a values file on the runner's disk, never the command line (which
+          # shows up in process listings and debug logs).
+          python3 - <<'PY' > /tmp/secret-values.yaml
+          import json, os
+          env = {k: os.environ[k] for k in ("DATABASE_URL", "SECRET_ENCRYPTION_KEY", "KEYCLOAK_CLIENT_SECRET",
+                 "KEYCLOAK_ADMIN_CLIENT_SECRET", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET") if os.environ.get(k)}
+          if os.environ.get("REDIS_URL"): env["REDIS_URL"] = os.environ["REDIS_URL"]
+          print(json.dumps({"env": env, "migration": {"databaseUrl": os.environ["MIGRATION_DATABASE_URL"],
+                                                      "appDbPassword": os.environ["APP_DB_PASSWORD"]}}))
+          PY
+          helm upgrade --install "$RELEASE" infra/helm/cronsentinel \
+            --namespace "$NAMESPACE" --create-namespace \
+            -f "deploy/environments/${{ github.event.inputs.environment || 'staging' }}.yaml" \
+            -f /tmp/secret-values.yaml \
+            --set-string "image.api=${REGISTRY}/jobwatch-api:${TAG}" \
+            --set-string "image.web=${REGISTRY}/jobwatch-web:${TAG}" \
+            --set-string "domain=${{ vars.DOMAIN }}" --set-string "ingestDomain=${{ vars.INGEST_DOMAIN }}" \
+            --set-string "env.API_PUBLIC_URL=https://${{ vars.DOMAIN }}" \
+            --set-string "env.WEB_PUBLIC_URL=https://${{ vars.DOMAIN }}" \
+            --set-string "env.INGEST_PUBLIC_URL=https://${{ vars.INGEST_DOMAIN }}" \
+            --set-string "env.AGENT_DOWNLOAD_BASE=https://github.com/${{ github.repository }}/releases/download" \
+            --set-string "env.AGENT_VERSION=${TAG}" \
+            --set-string "env.KEYCLOAK_ISSUER=${{ vars.KEYCLOAK_ISSUER }}" \
+            --atomic --wait --timeout 15m
+          rm -f /tmp/secret-values.yaml
+
+      - name: Smoke test
+        env:
+          SMOKE_PING_TOKEN: ${{ secrets.SMOKE_PING_TOKEN }}
+        run: bash deploy/smoke.sh "https://${{ vars.DOMAIN }}" "https://${{ vars.INGEST_DOMAIN }}"
+
+      - name: Roll back if the smoke test failed
+        if: failure()
+        run: |
+          helm history "$RELEASE" -n "$NAMESPACE" --max 5 || true
+          if [ "$(helm history "$RELEASE" -n "$NAMESPACE" -o json | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')" -gt 1 ]; then
+            helm rollback "$RELEASE" -n "$NAMESPACE" --wait --timeout 10m
+            echo "::warning::rolled back the application to the previous release. Database migrations are NOT rolled back: check docs/DEPLOY.md (Rollback) for migrations the previous release cannot run on."
+          fi

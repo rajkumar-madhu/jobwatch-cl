@@ -1,0 +1,19 @@
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+WORKDIR /app
+# HTTPS: some networks answer http://deb.debian.org with 403, which apt then reports as "no longer signed".
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+ && apt-get update && apt-get install -y --no-install-recommends libpq5 && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system --gid 10001 jobwatch && useradd --system --uid 10001 --gid jobwatch --no-create-home jobwatch
+COPY apps/api/pyproject.toml ./
+COPY apps/api/cronsentinel ./cronsentinel
+COPY apps/api/alembic ./alembic
+COPY apps/api/alembic.ini ./
+# R62: the Linux agent installer, served (with this deployment's defaults) at <ingest>/agent/install.sh
+COPY agents/linux-agent/packaging/install.sh /app/agent/install.sh
+ENV AGENT_INSTALL_SCRIPT=/app/agent/install.sh
+# R39: regular (non-editable) install, and the process runs unprivileged.
+RUN pip install . && chown -R root:root /app && chmod -R a-w /app
+USER 10001:10001
+EXPOSE 8000 8010
+CMD ["uvicorn", "cronsentinel.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]

@@ -1,0 +1,39 @@
+[project]
+name = "cronsentinel-api"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115", "uvicorn[standard]>=0.30", "sqlalchemy>=2.0", "psycopg[binary]>=3.2",
+  "alembic>=1.13", "pydantic>=2.8", "pydantic-settings>=2.4", "redis>=5.0", "nats-py>=2.8",
+  "croniter>=3.0", "python-ulid>=2.7", "argon2-cffi>=23.1", "python-jose[cryptography]>=3.3",
+  "httpx>=0.27", "structlog>=24.4", "cron-descriptor>=1.4",
+  "celery[redis]>=5.4", "cryptography>=43", "prometheus-client>=0.20",
+  "dnspython>=2.6",   # R43: DNS TXT verification of SSO email domains
+]
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6,<0.17", "jsonschema>=4.23"]  # jsonschema: R14 mock/real schema contract
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+[tool.setuptools.packages.find]
+include = ["cronsentinel*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+# R39: explicit rule set. With no config, ruff's *default* selection is whatever the installed
+# version ships, and dev deps say ruff>=0.6 — a newer ruff turned `ruff check .` (CI's first step)
+# from green into 227 errors without a line of code changing. Pin both the rules and the major.
+[tool.ruff]
+target-version = "py312"
+line-length = 200
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B006", "S105", "S106"]
+ignore = ["E701", "E702", "E731"]   # house style: one-line `if x: raise` and lambdas in tables
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106"]   # fixture tokens are not secrets
+"scripts/**" = ["S105", "S106"]
