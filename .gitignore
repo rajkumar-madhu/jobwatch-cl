@@ -21,3 +21,6 @@ agent.json
 apps/web/playwright-report/
 apps/web/test-results/
 apps/web/tsconfig.tsbuildinfo
+
+# macOS
+.DS_Store
