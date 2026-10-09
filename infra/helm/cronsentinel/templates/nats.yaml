@@ -11,7 +11,16 @@ spec:
       containers:
         - name: nats
           image: nats:2.10-alpine
-          args: ["-js", "-sd", "/data", "--cluster_name", "cs", "--cluster", "nats://0.0.0.0:6222", "--routes", "nats://{{ .Release.Name }}-nats-0.{{ .Release.Name }}-nats:6222,nats://{{ .Release.Name }}-nats-1.{{ .Release.Name }}-nats:6222,nats://{{ .Release.Name }}-nats-2.{{ .Release.Name }}-nats:6222"]
+          {{- /* A lone JetStream node configured with peer routes waits forever for a quorum. */}}
+          {{- if gt (int .Values.nats.replicas) 1 }}
+          {{- $routes := list }}
+          {{- range $i := until (int .Values.nats.replicas) }}
+          {{- $routes = append $routes (printf "nats://%s-nats-%d.%s-nats:6222" $.Release.Name $i $.Release.Name) }}
+          {{- end }}
+          args: ["-js", "-sd", "/data", "--cluster_name", "cs", "--cluster", "nats://0.0.0.0:6222", "--routes", {{ join "," $routes | quote }}]
+          {{- else }}
+          args: ["-js", "-sd", "/data"]
+          {{- end }}
           ports: [{containerPort: 4222}, {containerPort: 6222}]
           volumeMounts: [{name: data, mountPath: /data}]
   volumeClaimTemplates: [{metadata: {name: data}, spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: {{ .Values.nats.storage }}}}}}]
