@@ -54,10 +54,20 @@ spec:
       http:
         paths:
           {{- /* Single-host installs share the app host, so claim only ingest's routes, never "/". */}}
-          {{- $paths := ternary (list "/api/v1/heartbeat" "/ping" "/heartbeat" "/agent" "/hc" "/cronitor") (list "/") $singleHost }}
+          {{- $ingestPaths := list "/api/v1/heartbeat" "/ping" "/heartbeat" "/agent" "/hc" "/cronitor" }}
+          {{- $paths := ternary $ingestPaths (list "/") $singleHost }}
           {{- range $paths }}
           - {path: {{ . }}, pathType: Prefix, backend: {service: {name: {{ include "cs.fullname" $ }}-ingest, port: {number: 8010}}}}
           {{- end }}
+    {{- /* Keeps ping URLs already handed out on the app host working after ingest moves to its own host. */}}
+    {{- if and (not $singleHost) .Values.ingress.ingestPathsOnAppHost }}
+    - host: {{ .Values.domain }}
+      http:
+        paths:
+          {{- range $ingestPaths }}
+          - {path: {{ . }}, pathType: Prefix, backend: {service: {name: {{ include "cs.fullname" $ }}-ingest, port: {number: 8010}}}}
+          {{- end }}
+    {{- end }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

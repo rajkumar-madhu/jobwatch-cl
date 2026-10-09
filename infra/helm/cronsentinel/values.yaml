@@ -6,6 +6,7 @@ ingress:
   annotations: {}       # e.g. cert-manager issuer; copied to the ingest Ingress only when it has its own host
   appLimitRps: 50       # per client IP, app host (UI + API)
   ingestLimitRps: 1000  # per client IP, ingest host: high on purpose (many jobs behind one IP); per-job limits apply in the app
+  ingestPathsOnAppHost: false  # with a separate ingestDomain, also serve the ingest paths on the app host (installs that started single-host)
 migration:                # used only by the pre-install/pre-upgrade migrate hook, which runs as the DB owner
   databaseUrl: postgresql+psycopg://owner:pass@postgres:5432/cronsentinel
   appDbPassword: pass     # must match the password in env.DATABASE_URL; migration 0007 sets it on jobwatch_app
