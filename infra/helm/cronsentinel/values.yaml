@@ -18,7 +18,7 @@ env:                      # rendered into a Secret; supply real values via --set
   SECRET_ENCRYPTION_KEY: ""
   API_PUBLIC_URL: https://cronsentinel.example.com
   WEB_PUBLIC_URL: https://cronsentinel.example.com
-  INGEST_PUBLIC_URL: https://ingest.cronsentinel.example.com
+  INGEST_PUBLIC_URL: ""   # empty = https://<ingestDomain>
   AGENT_DOWNLOAD_BASE: ""   # R62: e.g. https://github.com/<owner>/<repo>/releases/download (deploy.yml sets it)
   AGENT_VERSION: ""         # R62: the release tag holding the agent binaries (deploy.yml sets it to the deployed tag)
   AUTH_SOCIAL_PROVIDERS: ""   # R51: e.g. "google,github,microsoft" once those identity providers exist in the Keycloak realm   # R49: ping URLs the API reports (imports)
