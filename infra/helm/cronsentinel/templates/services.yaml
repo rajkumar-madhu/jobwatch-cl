@@ -12,15 +12,24 @@ kind: Ingress
 # limit; the ingest host must not inherit it — one server running many cron jobs pings from one IP,
 # and at the top of the hour 100+ jobs fire together (same failure mode as the R47 app-level bug).
 # Ingest is protected per job by the application's own rate limiter instead.
-metadata: {name: {{ include "cs.fullname" . }}, namespace: {{ .Release.Namespace }}, annotations: {nginx.ingress.kubernetes.io/limit-rps: {{ .Values.ingress.appLimitRps | quote }}}}
+{{- $singleHost := eq .Values.ingestDomain .Values.domain }}
+metadata:
+  name: {{ include "cs.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    {{- with .Values.ingress.annotations }}{{ toYaml . | nindent 4 }}{{ end }}
+    nginx.ingress.kubernetes.io/limit-rps: {{ .Values.ingress.appLimitRps | quote }}
 spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
   tls: [{hosts: [{{ .Values.domain }}], secretName: {{ include "cs.fullname" . }}-tls}]
   rules:
     - host: {{ .Values.domain }}
       http:
         paths:
           # API prefixes. /scim (R44) was missing, so SCIM requests reached the web app and 404ed.
-          {{- range list "/api" "/auth" "/public" "/scim" }}
+          {{- range list "/api" "/auth" "/public" "/scim" "/openapi.json" }}
           - {path: {{ . }}, pathType: Prefix, backend: {service: {name: {{ include "cs.fullname" $ }}-api, port: {number: 8000}}}}
           {{- end }}
           - {path: /, pathType: Prefix, backend: {service: {name: {{ include "cs.fullname" . }}-web, port: {number: 3000}}}}
@@ -31,15 +40,26 @@ metadata:
   name: {{ include "cs.fullname" . }}-ingest
   namespace: {{ .Release.Namespace }}
   annotations:
+    {{- /* On a shared host the app Ingress owns the certificate; a second cert-manager owner would fight it. */}}
+    {{- if and (not $singleHost) .Values.ingress.annotations }}{{ omit .Values.ingress.annotations "nginx.ingress.kubernetes.io/proxy-body-size" | toYaml | nindent 4 }}{{ end }}
     nginx.ingress.kubernetes.io/limit-rps: {{ .Values.ingress.ingestLimitRps | quote }}
     nginx.ingress.kubernetes.io/proxy-body-size: "1m"
 spec:
-  tls: [{hosts: [{{ .Values.ingestDomain }}], secretName: {{ include "cs.fullname" . }}-ingest-tls}]
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  tls: [{hosts: [{{ .Values.ingestDomain }}], secretName: {{ include "cs.fullname" . }}-{{ ternary "tls" "ingest-tls" $singleHost }}}]
   rules:
     - host: {{ .Values.ingestDomain }}
-      http: {paths: [{path: /, pathType: Prefix, backend: {service: {name: {{ include "cs.fullname" . }}-ingest, port: {number: 8010}}}}]}
+      http:
+        paths:
+          {{- /* Single-host installs share the app host, so claim only ingest's routes, never "/". */}}
+          {{- $paths := ternary (list "/api/v1/heartbeat" "/ping" "/heartbeat" "/agent") (list "/") $singleHost }}
+          {{- range $paths }}
+          - {path: {{ . }}, pathType: Prefix, backend: {service: {name: {{ include "cs.fullname" $ }}-ingest, port: {number: 8010}}}}
+          {{- end }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata: {name: {{ include "cs.fullname" . }}-ingest, namespace: {{ .Release.Namespace }}}
-spec: {scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ include "cs.fullname" . }}-ingest}, minReplicas: {{ .Values.replicas.ingest }}, maxReplicas: 20, metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 60}}}]}
+spec: {scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ include "cs.fullname" . }}-ingest}, minReplicas: {{ .Values.replicas.ingest }}, maxReplicas: {{ .Values.replicas.ingestMax | default 20 }}, metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 60}}}]}
