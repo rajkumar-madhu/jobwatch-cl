@@ -80,19 +80,20 @@ function JobsInner() {
   const [filter, setFilter] = useState("all");
   const [creating, setCreating] = useState(params.get("new") === "1");
   const q = useQuery({ queryKey: ["jobs", filter], queryFn: () => api<{ items: Job[] }>(`/api/v1/jobs?limit=200${filter !== "all" ? `&status=${filter}` : ""}`) });
+  const items = q.data?.items ?? [];
   return (
     <Page title="Jobs" actions={<div className="flex gap-2"><Link href="/import" className="btn">Import</Link><button className="btn btn-primary" onClick={() => setCreating(true)}>Add job</button></div>}>
       {creating && <NewJob onDone={() => setCreating(false)} />}
       <div className="-mx-1 mb-3 flex gap-1 overflow-x-auto px-1 pb-1">{FILTERS.map((f) => (
         <button key={f} onClick={() => setFilter(f)} className={`rounded-md px-2.5 py-1 text-sm capitalize ${filter === f ? "bg-ink/10 font-medium" : "text-mute hover:text-ink"}`}>{f}</button>))}</div>
-      {q.error ? <ErrorBox error={q.error} /> : q.isLoading ? <Skeleton /> : q.data!.items.length === 0
+      {q.error ? <ErrorBox error={q.error} /> : q.isLoading ? <Skeleton /> : items.length === 0
         ? <Empty title={filter === "all" ? "No jobs yet" : `No ${filter} jobs`} hint={filter === "all" ? "Add a job manually, or install the agent and it will discover your crontabs." : "Try another filter."} action={filter === "all" && <button className="btn btn-primary" onClick={() => setCreating(true)}>Add job</button>} />
         : <>
             <div className="hidden tbl card sm:block">
               <div className="row grid-cols-[minmax(0,2fr)_110px_minmax(0,1.5fr)_110px_60px] th"><span>Job</span><span>Status</span><span>Last 30 runs</span><span>Last run</span><span className="text-right" title="0–100, weighing success rate, missed/timed-out runs, duration stability, dependency health and recent incidents">Score</span></div>
-              {q.data!.items.map((j) => <JobRow key={j.id} j={j} />)}
+              {items.map((j) => <JobRow key={j.id} j={j} />)}
             </div>
-            <div className="space-y-2 sm:hidden">{q.data!.items.map((j) => <JobCard key={j.id} j={j} />)}</div>
+            <div className="space-y-2 sm:hidden">{items.map((j) => <JobCard key={j.id} j={j} />)}</div>
           </>}
     </Page>
   );
