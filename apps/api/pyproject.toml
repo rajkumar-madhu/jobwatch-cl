@@ -19,6 +19,9 @@ build-backend = "setuptools.build_meta"
 include = ["cronsentinel*"]
 
 [tool.pytest.ini_options]
+# Integration tests share fixtures via `from tests.integration...`; bare `pytest` (CI) doesn't put
+# the rootdir on sys.path the way `python -m pytest` does.
+pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
