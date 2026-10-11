@@ -32,6 +32,9 @@ jobs:
           CREATE ROLE migrator LOGIN PASSWORD 'migrator' NOSUPERUSER CREATEROLE;
           ALTER SCHEMA public OWNER TO migrator;
           GRANT CONNECT, TEMP, CREATE ON DATABASE cronsentinel_nonsuperuser_check TO migrator;
+          -- Roles are cluster-wide and the superuser run above already created these. On PG16 a
+          -- CREATEROLE role may only ALTER/GRANT roles it holds ADMIN on (0007, 0011).
+          GRANT jobwatch_app, jobwatch_system TO migrator WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
           SQL
       - run: cd apps/api && JOBWATCH_APP_DB_PASSWORD=app alembic upgrade head
         env: {DATABASE_URL: "postgresql+psycopg://migrator:migrator@localhost:5432/cronsentinel_nonsuperuser_check"}
