@@ -2,6 +2,8 @@ image: {api: ghcr.io/cronsentinel/api:0.1.0, web: ghcr.io/cronsentinel/web:0.1.0
 domain: cronsentinel.example.com
 ingestDomain: ingest.cronsentinel.example.com
 ingress:
+  className: ""         # e.g. nginx; empty = the cluster's default IngressClass
+  annotations: {}       # e.g. cert-manager issuer; copied to the ingest Ingress only when it has its own host
   appLimitRps: 50       # per client IP, app host (UI + API)
   ingestLimitRps: 1000  # per client IP, ingest host: high on purpose (many jobs behind one IP); per-job limits apply in the app
 migration:                # used only by the pre-install/pre-upgrade migrate hook, which runs as the DB owner
@@ -31,8 +33,8 @@ env:                      # rendered into a Secret; supply real values via --set
   OUTBOUND_ALLOW_PRIVATE: "false"
   STRIPE_SECRET_KEY: ""
   STRIPE_WEBHOOK_SECRET: ""
-replicas: {api: 2, ingest: 2, web: 2, execProcessor: 2, reconciler: 1, scheduleGenerator: 1, outboundExporter: 1, ruleEngine: 1, notifier: 2, scorer: 1}
-nats: {replicas: 3, storage: 10Gi}
+replicas: {api: 2, ingest: 2, ingestMax: 20, web: 2, execProcessor: 2, reconciler: 1, scheduleGenerator: 1, outboundExporter: 1, ruleEngine: 1, notifier: 2, scorer: 1}   # ingest/ingestMax = HPA min/max; size ingestMax to the nodes' CPU
+nats: {replicas: 3, storage: 10Gi}   # replicas is install-time only: switching 1 <-> 3 on existing JetStream data needs a fresh volume
 resources:
   api: {requests: {cpu: 100m, memory: 256Mi}, limits: {cpu: "1", memory: 512Mi}}
   worker: {requests: {cpu: 50m, memory: 192Mi}, limits: {cpu: 500m, memory: 384Mi}}
