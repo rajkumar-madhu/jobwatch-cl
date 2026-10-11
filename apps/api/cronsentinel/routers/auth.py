@@ -1,5 +1,7 @@
 """Keycloak OIDC authorization-code flow → httpOnly session cookie (D1).
 Session = signed JWT {sub, email, name, org_id?} using SECRET_ENCRYPTION_KEY. CSRF: SameSite=Lax + state param."""
+import base64
+import hashlib
 import json
 import re
 import secrets
@@ -127,11 +129,15 @@ def login(next: str = "/", idp: str | None = None, login_hint: str | None = None
         raise HTTPException(400, "invalid identity provider")
     state = secrets.token_urlsafe(24)
     nonce = secrets.token_urlsafe(24)
+    # PKCE (S256): a Keycloak client with PKCE required rejects any authorize request without it.
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     # state and nonce are stored together: state binds the redirect, nonce binds the id_token to
     # this login attempt so a replayed code cannot mint a session.
-    _r.setex(f"oauth:{state}", 600, json.dumps({"next": next, "nonce": nonce}))
+    _r.setex(f"oauth:{state}", 600, json.dumps({"next": next, "nonce": nonce, "code_verifier": verifier}))
     params = {"client_id": settings.keycloak_client_id, "response_type": "code", "scope": "openid email profile",
-              "redirect_uri": f"{settings.api_public_url}/auth/callback", "state": state, "nonce": nonce}
+              "redirect_uri": f"{settings.api_public_url}/auth/callback", "state": state, "nonce": nonce,
+              "code_challenge": challenge, "code_challenge_method": "S256"}
     if idp:
         params["kc_idp_hint"] = idp          # skip Keycloak's own login page, go to the org's IdP
     if login_hint:
@@ -158,8 +164,11 @@ def callback(code: str, state: str):
         raise HTTPException(400, "invalid state") from e
     if not nonce:
         raise HTTPException(400, "invalid state")
-    tok = httpx.post(_discovery()["token_endpoint"], data={"grant_type": "authorization_code", "code": code, "redirect_uri": f"{settings.api_public_url}/auth/callback",
-                                                            "client_id": settings.keycloak_client_id, "client_secret": settings.keycloak_client_secret}, timeout=10)
+    form = {"grant_type": "authorization_code", "code": code, "redirect_uri": f"{settings.api_public_url}/auth/callback",
+            "client_id": settings.keycloak_client_id, "client_secret": settings.keycloak_client_secret}
+    if parsed.get("code_verifier"):   # absent only for states issued before PKCE (10 min TTL)
+        form["code_verifier"] = parsed["code_verifier"]
+    tok = httpx.post(_discovery()["token_endpoint"], data=form, timeout=10)
     if tok.status_code != 200: raise HTTPException(401, "token exchange failed")
     disc = _discovery()
     # R35: the same response's access_token, so verify_id_token can check at_hash — Keycloak (and

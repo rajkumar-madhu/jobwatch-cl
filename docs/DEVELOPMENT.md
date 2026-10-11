@@ -955,6 +955,9 @@ eye. That caught two real defects before either shipped:
 1. **The realm export required PKCE**, but `routers/auth.py` never sends a `code_verifier` —
    `/auth/login` would have 400'd on the very first request against a real Keycloak. Removed the
    `pkce.code.challenge.method` attribute (not needed: confidential client, server-held secret).
+   **Superseded:** the API now implements PKCE (S256) — `/auth/login` stores a `code_verifier`
+   with the OAuth state and sends `code_challenge`; `/auth/callback` sends the verifier in the
+   token exchange. Keycloak clients may require PKCE again (production's live client does).
 2. **`verify_id_token()` had no way to check `at_hash`, and nothing called it with one.** Every
    OIDC-spec-following IdP puts `at_hash` on an id_token issued alongside an access_token — which
    is exactly what `/auth/callback`'s authorization_code exchange always produces. Confirmed by
