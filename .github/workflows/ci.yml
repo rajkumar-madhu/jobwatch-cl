@@ -75,7 +75,7 @@ jobs:
       - run: |
           cd tools/ui-review && uvicorn mock_api:app --port 8000 &
           cd apps/web && cp -r .next/static .next/standalone/.next/ && PORT=3000 node .next/standalone/server.js &   # R39: output=standalone
-          npx wait-on http://localhost:8000/api/v1/jobs http://localhost:3000 -t 60000
+          npx wait-on http-get://localhost:8000/api/v1/jobs http-get://localhost:3000 -t 60000   # GET: the mock API answers HEAD with 405
         working-directory: .
       - run: cd apps/web && npm run test:e2e
       - uses: actions/upload-artifact@v4
