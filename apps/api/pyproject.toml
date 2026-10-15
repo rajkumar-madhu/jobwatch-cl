@@ -11,7 +11,7 @@ dependencies = [
   "dnspython>=2.6",   # R43: DNS TXT verification of SSO email domains
 ]
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6,<0.17", "jsonschema>=4.23"]  # jsonschema: R14 mock/real schema contract
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6,<0.17", "jsonschema>=4.23", "fakeredis>=2.20"]  # jsonschema: R14 mock/real schema contract
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

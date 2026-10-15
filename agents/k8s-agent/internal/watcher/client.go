@@ -38,13 +38,21 @@ func (c *Client) Post(ctx context.Context, path string, body any, out any) error
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("server %d: %s", resp.StatusCode, rb)
+		return &HTTPError{Status: resp.StatusCode, Body: string(rb)}
 	}
 	if out != nil && len(rb) > 0 {
 		return json.Unmarshal(rb, out)
 	}
 	return nil
 }
+
+// HTTPError is a non-2xx answer from the ingest tier.
+type HTTPError struct {
+	Status int
+	Body   string
+}
+
+func (e *HTTPError) Error() string { return fmt.Sprintf("server %d: %s", e.Status, e.Body) }
 
 // Enroll exchanges a bootstrap token for an agent key; result cached in a mounted emptyDir/Secret path.
 func Enroll(ctx context.Context, server, bootstrap, clusterName, insecure string) (id, key string, err error) {
