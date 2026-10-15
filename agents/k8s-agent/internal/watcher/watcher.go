@@ -84,6 +84,7 @@ type Watcher struct {
 	started   map[string]bool
 	finished  map[string]bool // R39: terminal event already emitted for this Job uid
 	disk      DiskQueue       // R40: durable queue; nil → in-memory only
+	batch     *batchControl   // review #4: isolates an event the server keeps rejecting
 }
 
 // DiskQueue is the slice of buffer.Buffer the watcher needs (an interface keeps the watcher
@@ -132,9 +133,16 @@ func (w *Watcher) push(e ExecEvent) {
 
 // flushDisk sends the durable queue in batches; an event leaves the disk only after the server
 // accepted it.
+//
+// One event the server cannot take used to block every event behind it forever (the same batch head
+// was retried on every tick). A rejected batch is now halved on later ticks until the bad event is
+// alone, and that event is dropped once an empty batch shows the server is otherwise healthy.
 func (w *Watcher) flushDisk(ctx context.Context) {
+	if w.batch == nil {
+		w.batch = newBatchControl(500)
+	}
 	for ctx.Err() == nil {
-		lines, next, err := w.disk.Peek(500)
+		lines, next, err := w.disk.Peek(w.batch.limit)
 		if err != nil {
 			log.Printf("disk queue read: %v", err)
 			return
@@ -146,8 +154,16 @@ func (w *Watcher) flushDisk(ctx context.Context) {
 			return
 		}
 		if err := w.client.Post(ctx, "/agent/v1/k8s/events", map[string]any{"events": lines}, nil); err != nil {
-			log.Printf("flush: %v (%d events stay queued on disk)", err, len(lines))
-			return
+			probe := func() error {
+				return w.client.Post(ctx, "/agent/v1/k8s/events", map[string]any{"events": []json.RawMessage{}}, nil)
+			}
+			if !w.batch.failed(err, headKey(lines[0]), len(lines), probe) {
+				log.Printf("flush: %v (%d events stay queued on disk; next batch %d)", err, len(lines), w.batch.limit)
+				return
+			}
+			log.Printf("flush: dropping 1 event the server keeps rejecting (%v): %.512s", err, lines[0])
+		} else {
+			w.batch.succeeded()
 		}
 		if err := w.disk.Ack(next); err != nil {
 			log.Printf("disk queue ack: %v", err)

@@ -34,6 +34,10 @@ import (
 // this by the wrapper; anything larger is corruption.
 const MaxLine = 1 << 20
 
+// MaxBatchBytes caps one Peek so a batch stays bounded in memory and request size (a 500-line batch
+// of up-to-1 MiB lines could OOM-kill the pod). A single line is always returned.
+var MaxBatchBytes = 1 << 20
+
 // MaxBytes caps the file while the ingest tier is unreachable (the default PVC is 16 MiB).
 // Beyond it new events are refused and counted; the server's slot reconciliation still records
 // those runs as missed/unobserved instead of losing them silently.
@@ -117,6 +121,7 @@ func (b *Buffer) Peek(n int) ([]json.RawMessage, int64, error) {
 	r := bufio.NewReaderSize(rf, 64<<10)
 	var out []json.RawMessage
 	pos := b.offset
+	size := 0
 	for len(out) < n {
 		line, tooLong, complete, err := readLine(r)
 		if err == io.EOF && !complete {
@@ -125,6 +130,10 @@ func (b *Buffer) Peek(n int) ([]json.RawMessage, int64, error) {
 		if err != nil && err != io.EOF {
 			return out, pos, err
 		}
+		if len(out) > 0 && !tooLong && size+len(line.data) > MaxBatchBytes {
+			break // not consumed: it heads the next batch
+		}
+		size += len(line.data)
 		pos += int64(line.consumed)
 		if tooLong || len(bytes.TrimSpace(line.data)) == 0 {
 			if tooLong {

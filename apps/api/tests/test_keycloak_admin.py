@@ -37,7 +37,7 @@ def test_oidc_representation_uses_discovered_endpoints_and_pkce():
                                  "authorization_url": "https://a", "token_url": "https://t", "jwks_url": "https://k"})
     cfg = rep["config"]
     assert (cfg["authorizationUrl"], cfg["tokenUrl"], cfg["jwksUrl"], cfg["useJwksUrl"]) == ("https://a", "https://t", "https://k", "true")
-    assert cfg["pkceEnabled"] == "true" and cfg["validateSignature"] == "true" and rep["trustEmail"] is True
+    assert cfg["pkceEnabled"] == "true" and cfg["validateSignature"] == "true" and rep["trustEmail"] is False  # SSO takeover fix: never auto-link by email
     json.dumps(rep)
 
 

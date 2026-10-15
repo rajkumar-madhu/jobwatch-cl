@@ -53,13 +53,35 @@ def purge_org(org_id: str, yes: bool = False):
     return 0
 
 
+def resync_idps():
+    """Re-push every org's identity provider to Keycloak from org_sso. Run once after upgrading past
+    the trustEmail fix: providers created earlier still have trustEmail=true in Keycloak until re-saved."""
+    from .crypto import decrypt_json
+    from .keycloak_admin import KeycloakAdminError, upsert_idp
+    failed = 0
+    with system_session() as s:
+        rows = s.execute(text("SELECT org_id, protocol, idp_alias, display_name, config_enc, enabled FROM org_sso")).all()
+    for r in rows:
+        try:
+            upsert_idp(r.idp_alias, r.protocol, r.display_name, decrypt_json(r.config_enc), enabled=r.enabled)
+            print(f"ok      {r.idp_alias}")
+        except (KeycloakAdminError, KeyError, ValueError) as e:
+            failed += 1
+            print(f"FAILED  {r.idp_alias}: {e}")
+    print(f"{len(rows) - failed}/{len(rows)} identity providers re-synced")
+    return 1 if failed else 0
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("bootstrap"); b.add_argument("--org", required=True); b.add_argument("--email", required=True)
     p_ = sub.add_parser("purge-org", help="delete an organization and all of its data"); p_.add_argument("--org-id", required=True); p_.add_argument("--yes", action="store_true")
+    sub.add_parser("resync-idps", help="re-push every org identity provider to Keycloak (after SSO security fixes)")
     a = ap.parse_args()
     if a.cmd == "bootstrap":
         bootstrap(a.org, a.email)
     elif a.cmd == "purge-org":
         raise SystemExit(purge_org(a.org_id, a.yes))
+    elif a.cmd == "resync-idps":
+        raise SystemExit(resync_idps())

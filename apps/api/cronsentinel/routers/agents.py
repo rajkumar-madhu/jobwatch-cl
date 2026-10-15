@@ -2,12 +2,13 @@
 import json
 import secrets
 from datetime import UTC, datetime
+from typing import Annotated
 from uuid import UUID
 
 import redis
 from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import text
 
 from .. import oncalendar, pingtokens, ratelimit, schedule
@@ -246,6 +247,69 @@ class EventsIn(BaseModel):
     events: list[dict] = Field(max_length=500)
 
 
+_MAX_TAIL = 64 * 1024   # agents send 32 KiB tails; keeps every event far below NATS's 1 MB payload limit
+_INT32 = 2**31 - 1
+
+
+class AgentEvent(BaseModel):
+    """One agent event, typed. Fields used to pass through unchecked, so one bad event (meta as a
+    list, duration_ms as a string, a 2 MB tail, sequence as text) raised mid-batch: a 500 for the
+    whole batch, which the agent then retried forever. Bad events are now dropped one by one."""
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str = Field(max_length=32)
+    job_token: str | None = Field(None, max_length=256)
+    fingerprint: str | None = Field(None, max_length=256)
+    execution_id: str | None = Field(None, max_length=128)
+    sequence: int = Field(0, ge=0, le=_INT32)
+    agent_ts: str | None = Field(None, max_length=64)
+    duration_ms: int | None = Field(None, ge=0, le=10 * 365 * 86400 * 1000)
+    exit_code: int | None = Field(None, ge=-_INT32 - 1, le=_INT32)
+    host: str | None = Field(None, max_length=255)
+    stdout_tail: str | None = None
+    stderr_tail: str | None = None
+    meta: dict[str, str | int | float | bool | None] = Field(default_factory=dict, max_length=64)
+    env_var_names: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=256)
+    metrics: dict | None = None
+
+    @field_validator("agent_ts", mode="before")
+    @classmethod
+    def _ts_text(cls, v):
+        return v if v is None or isinstance(v, str) else str(v)
+
+    @field_validator("stdout_tail", "stderr_tail")
+    @classmethod
+    def _tail(cls, v):
+        return v[-_MAX_TAIL:] if v else v   # the end of the output is the useful part
+
+    @field_validator("meta")
+    @classmethod
+    def _meta(cls, v):
+        return {str(k)[:128]: (x[:4096] if isinstance(x, str) else x) for k, x in v.items()}
+
+
+def _parse_events(raw: list) -> tuple[list[AgentEvent], int]:
+    good, bad = [], 0
+    for e in raw:
+        try:
+            good.append(AgentEvent.model_validate(e))
+        except ValidationError:
+            bad += 1
+    return good, bad
+
+
+def _token_allowed(e: AgentEvent, run_as_user: str | None) -> bool:
+    """Review #3: heartbeat tokens leak to other local users (cron lines in world-readable
+    /etc/crontab, `cs-run --job TOKEN` in ps). A token is the credential for root's jobs only when
+    root wrote the event; from a non-root user's spool file (the daemon stamps spool_uid/spool_user
+    from the file owner) it counts only for a job that runs as that same user. Otherwise the event
+    falls back to its fingerprint, which the daemon already re-derived from the file owner."""
+    uid = e.meta.get("spool_uid")
+    if uid is None or str(uid) == "0":
+        return True
+    return bool(run_as_user) and run_as_user == e.meta.get("spool_user")
+
+
 @agent.post("/events")
 async def events(body: EventsIn, request: Request, a: dict = Depends(agent_principal)):
     """Batch of wrapper/passive events. Resolves job by token or fingerprint, publishes to NATS.
@@ -260,27 +324,26 @@ async def events(body: EventsIn, request: Request, a: dict = Depends(agent_princ
     """
     org, aid = a["org_id"], a["agent_id"]
     now = datetime.now(UTC)
-    # R39: events are untyped dicts from the agent; drop anything that is not an object, and bound
-    # the fields that get persisted (tails are trimmed again in the processor to the log limit).
-    evs = [e for e in body.events if isinstance(e, dict)]
-    toks = sorted({e["job_token"] for e in evs if e.get("job_token")})
-    fps = sorted({e["fingerprint"] for e in evs if e.get("fingerprint")})
-    progress = [e for e in evs if e.get("kind") == "progress" and isinstance(e.get("execution_id"), str)
-                and len(e["execution_id"]) <= 128]
+    # R39: events are untyped dicts from the agent. Each one is now validated on its own (tails are
+    # trimmed again in the processor to the log limit); a bad one is counted and dropped, the rest go on.
+    evs, invalid = _parse_events(body.events)
+    toks = sorted({e.job_token for e in evs if e.job_token})
+    fps = sorted({e.fingerprint for e in evs if e.fingerprint})
+    progress = [e for e in evs if e.kind == "progress" and e.execution_id]
     js = request.app.state.js
 
     def _resolve() -> tuple[dict, dict]:
         with system_session() as s:
             hashed = {pingtokens.hash_token(t): t for t in toks}
-            by_tok = {hashed[h]: jid for h, jid in s.execute(
-                text("SELECT heartbeat_token_hash, id FROM jobs WHERE org_id=:o AND heartbeat_token_hash = ANY(:t)"),
+            by_tok = {hashed[h]: (jid, user) for h, jid, user in s.execute(
+                text("SELECT heartbeat_token_hash, id, run_as_user FROM jobs WHERE org_id=:o AND heartbeat_token_hash = ANY(:t)"),
                 {"o": org, "t": list(hashed)}).all()} if toks else {}
             by_fp = dict(s.execute(text("SELECT fingerprint, id FROM jobs WHERE org_id=:o AND fingerprint = ANY(:f)"),
                                    {"o": org, "f": fps}).all()) if fps else {}
             if progress:
                 s.execute(text("INSERT INTO execution_events (org_id, execution_id, agent_id, sequence, kind, agent_ts, payload) "
                                "VALUES (:o, :eid, :a, :seq, 'progress', :ts, '{}') ON CONFLICT DO NOTHING"),
-                          [{"o": org, "eid": e["execution_id"], "a": aid, "seq": e.get("sequence", 0), "ts": _ts_or_none(e.get("agent_ts"))} for e in progress])
+                          [{"o": org, "eid": e.execution_id, "a": aid, "seq": e.sequence, "ts": _ts_or_none(e.agent_ts)} for e in progress])
             s.execute(text("UPDATE agents SET last_seen_at=now() WHERE id=:a"), {"a": aid})
         return by_tok, by_fp
 
@@ -288,18 +351,24 @@ async def events(body: EventsIn, request: Request, a: dict = Depends(agent_princ
     accepted = dropped = 0
     out = []
     for e in evs:
-        job_id = by_tok.get(e.get("job_token")) or by_fp.get(e.get("fingerprint"))
+        tok = by_tok.get(e.job_token)
+        if tok and not _token_allowed(e, tok[1]):
+            tok = None
+        job_id = (tok[0] if tok else None) or by_fp.get(e.fingerprint)
         if not job_id:
             dropped += 1; continue  # unknown job: wait for next discovery cycle
-        kind = e.get("kind")
-        if kind == "progress":
+        if e.kind == "progress":
             accepted += 1; continue  # stored above
-        out.append({"org_id": org, "job_id": str(job_id), "agent_id": aid, "kind": kind, "execution_id": e.get("execution_id"),
-                    "sequence": e.get("sequence", 0), "agent_ts": e.get("agent_ts"), "server_ts": now.isoformat(),
-                    "duration_ms": e.get("duration_ms"), "exit_code": e.get("exit_code"), "host": e.get("host"),
-                    "stdout_tail": e.get("stdout_tail"), "stderr_tail": e.get("stderr_tail"),
-                    "meta": {**(e.get("meta") or {}), "env_var_names": e.get("env_var_names") or []},
-                    "metrics": clean_metrics(e.get("metrics") if isinstance(e.get("metrics"), dict) else {})})   # R54
+        try:
+            metrics = clean_metrics(e.metrics or {})   # R54
+        except Exception:
+            invalid += 1; continue
+        out.append({"org_id": org, "job_id": str(job_id), "agent_id": aid, "kind": e.kind, "execution_id": e.execution_id,
+                    "sequence": e.sequence, "agent_ts": e.agent_ts, "server_ts": now.isoformat(),
+                    "duration_ms": e.duration_ms, "exit_code": e.exit_code, "host": e.host,
+                    "stdout_tail": e.stdout_tail, "stderr_tail": e.stderr_tail,
+                    "meta": {**e.meta, "env_var_names": e.env_var_names},
+                    "metrics": metrics})
         accepted += 1
     if js is not None:
         for ev in out:
@@ -311,7 +380,7 @@ async def events(body: EventsIn, request: Request, a: dict = Depends(agent_princ
                 for ev in out:
                     process(s, ev)
         await run_in_threadpool(_inline)
-    return {"accepted": accepted, "dropped": dropped}
+    return {"accepted": accepted, "dropped": dropped, "invalid": invalid}
 
 
 @agent.post("/metrics")

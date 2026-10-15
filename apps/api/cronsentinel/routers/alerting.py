@@ -2,10 +2,10 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import text
 
-from ..alerting.rules import CONDITIONS
+from ..alerting.rules import CONDITIONS, validate_rule
 from ..auth import Principal, audit, current_principal, require_role
 from ..crypto import encrypt_json
 from ..db import tenant_session
@@ -37,6 +37,14 @@ class RuleIn(BaseModel):
     business_hours: dict | None = None
     repeat_interval_s: int | None = Field(None, ge=60)
     enabled: bool = True
+
+    @model_validator(mode="after")
+    def _evaluable(self):
+        # A rule the engine cannot evaluate would never page; refuse it here (422) instead.
+        # An unknown condition is left to create_rule, which has always answered 400 for it.
+        if self.condition in CONDITIONS and (errs := validate_rule(self.condition, self.scope, self.params, self.business_hours)):
+            raise ValueError("; ".join(errs))
+        return self
 
 
 class MaintenanceScope(BaseModel):

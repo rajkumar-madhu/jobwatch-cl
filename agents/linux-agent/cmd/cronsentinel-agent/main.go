@@ -2,7 +2,8 @@
 //
 //	cronsentinel-agent enroll --server https://ingest.example.com --token <bootstrap> [--name host]
 //	cronsentinel-agent run                       # daemon (systemd)
-//	cronsentinel-agent exec [--job <token>] -- <cmd> [args...]   # cs-run wrapper
+//	cronsentinel-agent exec [--job-file <path> | --job <token>] -- <cmd> [args...]   # cs-run wrapper
+//	                                             # (or CS_JOB_TOKEN=<token> in the crontab environment)
 //	cronsentinel-agent discover                  # print discovered jobs as JSON
 package main
 
@@ -121,8 +122,12 @@ func cmdEnroll(args []string) {
 // (everyone else) and the daemon delivers them. The command always runs, monitored or not.
 func cmdExec(args []string) int {
 	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
-	jobToken := fs.String("job", "", "heartbeat token (optional; fingerprint used otherwise)")
+	jobToken := fs.String("job", "", "heartbeat token (optional; fingerprint used otherwise). Visible in ps and often in a world-readable crontab: prefer --job-file or CS_JOB_TOKEN")
+	jobFile := fs.String("job-file", "", "read the heartbeat token from this file (keep it 0600)")
 	fs.Parse(args)
+	if *jobToken == "" {
+		*jobToken = jobTokenFrom(*jobFile, os.Getenv("CS_JOB_TOKEN"))
+	}
 	argv := fs.Args()
 	if len(argv) > 0 && argv[0] == "--" {
 		argv = argv[1:]
@@ -160,9 +165,31 @@ func cmdExec(args []string) int {
 	return agent.Run(ctx, cfg, push, *jobToken, fp, schedule, argv)
 }
 
+// jobTokenFrom reads the heartbeat token from a file (first line) or falls back to the env value.
+// A token other local users can read lets them report fake runs, so a group/world-readable file
+// still works but is warned about.
+func jobTokenFrom(path, env string) string {
+	if path == "" {
+		return strings.TrimSpace(env)
+	}
+	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm()&0o044 != 0 {
+		log.Printf("cronsentinel: %s is readable by other users; chmod 600 it", path)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("cronsentinel: cannot read job token file: %v (reporting by fingerprint)", err)
+		return strings.TrimSpace(env)
+	}
+	tok, _, _ := strings.Cut(string(b), "\n")
+	return strings.TrimSpace(tok)
+}
+
 // spoolAnnotate re-derives a spooled event's fingerprint from the *file owner*, so a local user can
 // only report runs of their own commands (a forged fingerprint for root's backup job is replaced by
-// one that matches nothing). Token-addressed events keep their token: the token is the credential.
+// one that matches nothing). Token-addressed events keep their token, but tokens leak (cron lines in
+// world-readable /etc/crontab, argv in ps), so spool_uid/spool_user (always overwritten here) say who
+// really wrote the event, and the server honours a token from a non-root spool file only for a job
+// that runs as that user.
 func spoolAnnotate(hostID string) func([]byte, uint32) []byte {
 	return func(raw []byte, uid uint32) []byte {
 		var ev map[string]any
@@ -223,6 +250,7 @@ func cmdRun() {
 	go func() {
 		defer wg.Done()
 		backoff := cfg.FlushEvery
+		bc := agent.NewBatchControl(cfg.BatchSize)
 		for {
 			select {
 			case <-ctx.Done():
@@ -234,7 +262,8 @@ func cmdRun() {
 			} else if n > 0 {
 				log.Printf("spool: imported %d events", n)
 			}
-			lines, next, err := buf.Peek(cfg.BatchSize)
+			head := buf.Offset()
+			lines, next, err := buf.Peek(bc.Limit())
 			if err != nil || len(lines) == 0 {
 				backoff = cfg.FlushEvery
 				continue
@@ -243,6 +272,19 @@ func cmdRun() {
 				if agent.IsFatal(err) {
 					log.Fatalf("fatal: %v", err)
 				}
+				// A batch the server keeps rejecting is narrowed down to the one bad event, which is
+				// then dropped so it cannot hold up every event behind it (review #4).
+				if bc.Failed(err, head, len(lines), func() error { return client.SendEvents(ctx, nil) }) {
+					log.Printf("dropping 1 event the server keeps rejecting (%v): %.512s", err, lines[0])
+					buf.Ack(next)
+					backoff = cfg.FlushEvery
+					continue
+				}
+				if bc.Limit() < len(lines) {
+					log.Printf("send failed (%d queued): %v; retrying %d at a time to isolate a bad event", len(lines), err, bc.Limit())
+					backoff = cfg.FlushEvery
+					continue
+				}
 				log.Printf("send failed (%d queued): %v", len(lines), err)
 				if backoff < 5*time.Minute {
 					backoff *= 2
@@ -250,6 +292,7 @@ func cmdRun() {
 				continue
 			}
 			buf.Ack(next)
+			bc.Succeeded()
 			backoff = cfg.FlushEvery
 		}
 	}()

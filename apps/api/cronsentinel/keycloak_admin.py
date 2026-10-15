@@ -56,10 +56,16 @@ def alias_for(org_id) -> str:
 
 
 def idp_representation(alias: str, protocol: str, display_name: str, cfg: dict, enabled: bool = True) -> dict:
-    """Keycloak IdentityProviderRepresentation. trustEmail is on because emails are only accepted
-    for domains the org has verified (enforced in routers/auth.py), not because we trust the IdP."""
-    common = {"alias": alias, "displayName": display_name, "enabled": enabled, "trustEmail": True,
-              "storeToken": False, "linkOnly": False, "firstBrokerLoginFlowAlias": "first broker login"}
+    """Keycloak IdentityProviderRepresentation.
+
+    trustEmail must stay off. Org admins control their own IdP, so it can assert any address, e.g.
+    victim@othercorp.com. With trustEmail on, the first-broker-login flow auto-links that assertion to
+    the victim's existing realm account before routers/auth.py gets to check the org's verified
+    domains — a cross-tenant account takeover. With it off, linking to an existing account requires
+    that account's password or a link sent to its mailbox, which the attacker has neither of."""
+    common = {"alias": alias, "displayName": display_name, "enabled": enabled, "trustEmail": False,
+              "storeToken": False, "linkOnly": False,
+              "firstBrokerLoginFlowAlias": settings.keycloak_sso_first_login_flow or "first broker login"}
     if protocol == "oidc":
         iss = cfg["issuer"].rstrip("/")
         return {**common, "providerId": "oidc", "config": {
