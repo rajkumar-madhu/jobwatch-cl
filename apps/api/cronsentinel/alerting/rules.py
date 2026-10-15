@@ -1,7 +1,7 @@
 """Pure rule evaluation logic — no I/O. Tested in tests/test_rules.py."""
 from dataclasses import dataclass, field
 from datetime import datetime, time
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 BAD = {"failed", "timeout", "missed"}
 CONDITIONS = {"failed", "missed", "late", "runtime_exceeded", "recovered", "consecutive_failures", "sla_breach"}
@@ -30,6 +30,64 @@ class Rule:
     channel_ids: list[str] = field(default_factory=list)
     business_hours: dict | None = None
     repeat_interval_s: int | None = None
+
+
+SCOPE_KEYS = {"job_ids", "tags", "environment_ids", "workspace_ids", "team_ids"}
+
+
+def validate_rule(condition: str, scope, params, business_hours) -> list[str]:
+    """Problems that would make the rule raise inside the engine. Empty list ⇒ valid.
+
+    The engine also isolates each rule, but a rule that can never evaluate is a rule that silently
+    never pages, so it is refused at create time instead."""
+    errs: list[str] = []
+    if condition not in CONDITIONS:
+        errs.append(f"condition must be one of {sorted(CONDITIONS)}")
+    if not isinstance(scope, dict):
+        errs.append("scope must be an object")
+    else:
+        for k in SCOPE_KEYS & scope.keys():   # other keys are ignored by scope_matches
+            v = scope[k]
+            if v is not None and (not isinstance(v, list) or not all(isinstance(x, str) for x in v)):
+                errs.append(f"scope.{k} must be a list of strings")
+    if not isinstance(params, dict):
+        errs.append("params must be an object")
+    elif "count" in params:
+        c = params["count"]   # int() in condition_fires; a numeric string from a form field is fine
+        if isinstance(c, str) and c.strip().isdigit():
+            c = int(c)
+        if isinstance(c, bool) or not isinstance(c, int) or not 1 <= c <= 1000:
+            errs.append("params.count must be an integer from 1 to 1000")
+    if business_hours is not None:
+        errs += _validate_business_hours(business_hours)
+    return errs
+
+
+def _validate_business_hours(bh) -> list[str]:
+    if not isinstance(bh, dict):
+        return ["business_hours must be an object"]
+    errs = []
+    tz = bh.get("tz", "UTC")
+    try:
+        if not isinstance(tz, str):
+            raise ValueError
+        ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError):
+        errs.append(f"business_hours.tz {tz!r} is not a known IANA time zone")
+    days = bh.get("days", [1, 2, 3, 4, 5])
+    if not isinstance(days, list) or not days or not all(isinstance(d, int) and not isinstance(d, bool) and 1 <= d <= 7 for d in days):
+        errs.append("business_hours.days must be a non-empty list of 1-7 (Mon=1)")
+    for k in ("start", "end"):
+        v = bh.get(k)
+        if v is None:
+            continue
+        try:
+            if not isinstance(v, str) or len(v) != 5 or v[2] != ":":
+                raise ValueError
+            time.fromisoformat(v)
+        except ValueError:
+            errs.append(f"business_hours.{k} must be HH:MM")
+    return errs
 
 
 def scope_matches(rule: Rule, job: JobCtx) -> bool:

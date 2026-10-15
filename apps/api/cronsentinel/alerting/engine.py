@@ -89,44 +89,59 @@ def handle_status_change(ev: dict):
 
         rule_rows = s.execute(text("SELECT id, condition, scope, params, severity, channel_ids, business_hours, repeat_interval_s FROM alert_rules WHERE org_id=:o AND enabled"), {"o": org}).all()
         for rr in rule_rows:
-            rule = R.Rule(id=str(rr.id), condition=rr.condition, scope=rr.scope or {}, params=rr.params or {}, severity=str(rr.severity),
-                          channel_ids=[str(c) for c in rr.channel_ids or []], business_hours=rr.business_hours, repeat_interval_s=rr.repeat_interval_s)
-            if not R.scope_matches(rule, job) or not R.condition_fires(rule, prev, new, job, new_state=ev.get("new_state"), unknown_reason=ev.get("unknown_reason")):
+            # One malformed rule (bad timezone, bad time string, non-numeric count, ...) used to raise
+            # out of this loop, so no later rule fired and no incident opened for the whole org, on
+            # every event. Each rule now runs in its own savepoint and only skips itself. Notifications
+            # are queued after the savepoint commits so a failed rule never pages for a rolled-back incident.
+            try:
+                with s.begin_nested():
+                    sends = _apply_rule(s, org, job, rr, prev, new, ev, now, flapping)
+            except Exception:
+                log.exception("alert rule failed; skipped", rule=str(rr.id), org=str(org), job=job.id)
                 continue
-            if not R.in_business_hours(rule.business_hours, now):
-                log.info("suppressed: outside business hours", rule=rule.id); continue
-            cond = "flapping" if flapping and rule.condition != "recovered" else rule.condition
-            dk = R.dedup_key(rule.id, job.id, cond)
-            last = s.execute(text("SELECT max(sent_at) FROM notification_ledger WHERE org_id=:o AND dedup_key=:k AND status='sent'"), {"o": org, "k": dk}).scalar()
-            if not R.should_repeat(last, rule.repeat_interval_s, now):
-                log.info("suppressed: dedup", key=dk); continue
+            for args in sends:
+                send_notification.delay(*args)
 
-            incident_id = None
-            if new in R.BAD or new == "late" or cond == "flapping":
-                inc = s.execute(text("SELECT id FROM incidents WHERE org_id=:o AND status<>'resolved' AND :j = ANY(affected_job_ids) ORDER BY started_at DESC LIMIT 1"),
-                                {"o": org, "j": job_id}).first()
-                if not inc:
-                    sig = C.signals_for_job(s, org, job_id)
-                    rel_id, why = C.find_related_incident(s, org, job_id, sig)
-                    if rel_id:
-                        C.attach(s, org, rel_id, job_id, sig, why, prev, new); incident_id = str(rel_id)
-                        for ch in rule.channel_ids:
-                            send_notification.delay(org, ch, dk, incident_id, {"job_id": job.id, "job_name": job.name, "prev_status": prev, "new_status": new, "condition": cond,
-                                                                              "severity": rule.severity, "incident_id": incident_id, "execution_id": ev.get("execution_id"), "ts": now.isoformat(), "correlated": why})
-                        continue
-                if inc:
-                    incident_id = str(inc.id)
-                    s.execute(text("INSERT INTO incident_events (org_id, incident_id, kind, payload) VALUES (:o, :i, 'status_change', CAST(:p AS jsonb))"),
-                              {"o": org, "i": incident_id, "p": json.dumps({"prev": prev, "new": new})})
-                else:
-                    title = f"{job.name} is {new}" if cond != "flapping" else f"{job.name} is flapping"
-                    incident_id = str(s.execute(text(
-                        "INSERT INTO incidents (org_id, severity, title, correlation_key, affected_job_ids, rule_id, correlation_signals) VALUES (:o, :sev, :t, :ck, ARRAY[:j]::uuid[], :r, CAST(:sig AS jsonb)) RETURNING id"),
-                        {"o": org, "sev": rule.severity, "t": title, "ck": f"job:{job_id}", "j": job_id, "r": rule.id, "sig": json.dumps([{**sig, "job_id": job_id}])}).scalar())
-                    s.execute(text("INSERT INTO incident_events (org_id, incident_id, kind, payload) VALUES (:o, :i, 'opened', CAST(:p AS jsonb))"),
-                              {"o": org, "i": incident_id, "p": json.dumps({"prev": prev, "new": new, "rule": rule.id})})
 
-            payload = {"job_id": job.id, "job_name": job.name, "prev_status": prev, "new_status": new, "condition": cond,
-                       "severity": rule.severity, "incident_id": incident_id, "execution_id": ev.get("execution_id"), "ts": now.isoformat()}
-            for ch in rule.channel_ids:
-                send_notification.delay(org, ch, dk, incident_id, payload)
+def _apply_rule(s, org, job: R.JobCtx, rr, prev, new, ev: dict, now: datetime, flapping: bool) -> list[tuple]:
+    """Evaluate one rule for one status change. Returns the send_notification calls to make."""
+    job_id = ev["job_id"]
+    rule = R.Rule(id=str(rr.id), condition=rr.condition, scope=rr.scope or {}, params=rr.params or {}, severity=str(rr.severity),
+                  channel_ids=[str(c) for c in rr.channel_ids or []], business_hours=rr.business_hours, repeat_interval_s=rr.repeat_interval_s)
+    if not R.scope_matches(rule, job) or not R.condition_fires(rule, prev, new, job, new_state=ev.get("new_state"), unknown_reason=ev.get("unknown_reason")):
+        return []
+    if not R.in_business_hours(rule.business_hours, now):
+        log.info("suppressed: outside business hours", rule=rule.id); return []
+    cond = "flapping" if flapping and rule.condition != "recovered" else rule.condition
+    dk = R.dedup_key(rule.id, job.id, cond)
+    last = s.execute(text("SELECT max(sent_at) FROM notification_ledger WHERE org_id=:o AND dedup_key=:k AND status='sent'"), {"o": org, "k": dk}).scalar()
+    if not R.should_repeat(last, rule.repeat_interval_s, now):
+        log.info("suppressed: dedup", key=dk); return []
+
+    incident_id = None
+    if new in R.BAD or new == "late" or cond == "flapping":
+        inc = s.execute(text("SELECT id FROM incidents WHERE org_id=:o AND status<>'resolved' AND :j = ANY(affected_job_ids) ORDER BY started_at DESC LIMIT 1"),
+                        {"o": org, "j": job_id}).first()
+        if not inc:
+            sig = C.signals_for_job(s, org, job_id)
+            rel_id, why = C.find_related_incident(s, org, job_id, sig)
+            if rel_id:
+                C.attach(s, org, rel_id, job_id, sig, why, prev, new); incident_id = str(rel_id)
+                return [(org, ch, dk, incident_id, {"job_id": job.id, "job_name": job.name, "prev_status": prev, "new_status": new, "condition": cond,
+                                                    "severity": rule.severity, "incident_id": incident_id, "execution_id": ev.get("execution_id"), "ts": now.isoformat(), "correlated": why})
+                        for ch in rule.channel_ids]
+        if inc:
+            incident_id = str(inc.id)
+            s.execute(text("INSERT INTO incident_events (org_id, incident_id, kind, payload) VALUES (:o, :i, 'status_change', CAST(:p AS jsonb))"),
+                      {"o": org, "i": incident_id, "p": json.dumps({"prev": prev, "new": new})})
+        else:
+            title = f"{job.name} is {new}" if cond != "flapping" else f"{job.name} is flapping"
+            incident_id = str(s.execute(text(
+                "INSERT INTO incidents (org_id, severity, title, correlation_key, affected_job_ids, rule_id, correlation_signals) VALUES (:o, :sev, :t, :ck, ARRAY[:j]::uuid[], :r, CAST(:sig AS jsonb)) RETURNING id"),
+                {"o": org, "sev": rule.severity, "t": title, "ck": f"job:{job_id}", "j": job_id, "r": rule.id, "sig": json.dumps([{**sig, "job_id": job_id}])}).scalar())
+            s.execute(text("INSERT INTO incident_events (org_id, incident_id, kind, payload) VALUES (:o, :i, 'opened', CAST(:p AS jsonb))"),
+                      {"o": org, "i": incident_id, "p": json.dumps({"prev": prev, "new": new, "rule": rule.id})})
+
+    payload = {"job_id": job.id, "job_name": job.name, "prev_status": prev, "new_status": new, "condition": cond,
+               "severity": rule.severity, "incident_id": incident_id, "execution_id": ev.get("execution_id"), "ts": now.isoformat()}
+    return [(org, ch, dk, incident_id, payload) for ch in rule.channel_ids]

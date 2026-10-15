@@ -42,13 +42,22 @@ func (c *Client) post(ctx context.Context, path string, body any, out any) error
 		return &FatalError{fmt.Sprintf("auth rejected (%d): %s", resp.StatusCode, rb)}
 	}
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("server %d: %s", resp.StatusCode, rb)
+		return &HTTPError{Status: resp.StatusCode, Body: string(rb)}
 	}
 	if out != nil && len(rb) > 0 {
 		return json.Unmarshal(rb, out)
 	}
 	return nil
 }
+
+// HTTPError is any other non-2xx answer. It is retryable; BatchControl decides whether the batch
+// itself is the problem.
+type HTTPError struct {
+	Status int
+	Body   string
+}
+
+func (e *HTTPError) Error() string { return fmt.Sprintf("server %d: %s", e.Status, e.Body) }
 
 type FatalError struct{ Msg string }
 

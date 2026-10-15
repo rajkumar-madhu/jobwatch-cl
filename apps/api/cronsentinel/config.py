@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     # R43: service-account client for the Keycloak Admin API (identity providers only).
     keycloak_admin_client_id: str = "jobwatch-admin"
     keycloak_admin_client_secret: str = ""
+    # First-broker-login flow for org IdPs. The stock flow is safe only because trustEmail is off
+    # (linking to an existing account then needs that account's password or mailbox). Stricter: a
+    # copy with only "Create User If Unique" (REQUIRED), so an IdP asserting an existing user's email
+    # is refused outright instead of offered a link.
+    keycloak_sso_first_login_flow: str = "first broker login"
     # R51: Keycloak identity-provider aliases offered as "Continue with …" buttons (comma separated,
     # e.g. "google,github,microsoft"). Each must exist in the realm; empty = email and SSO only.
     auth_social_providers: str = ""

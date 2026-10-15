@@ -32,6 +32,11 @@ import (
 // this by the wrapper; anything larger is corruption.
 const MaxLine = 1 << 20
 
+// MaxBatchBytes caps one Peek. Batches used to be bounded only by count: 100 lines of up to 1 MiB
+// could exceed the daemon's MemoryMax=128M and crash-loop it. A single line is always returned
+// even if it alone is larger.
+var MaxBatchBytes = 1 << 20
+
 type Buffer struct {
 	mu      sync.Mutex
 	path    string
@@ -105,6 +110,7 @@ func (b *Buffer) Peek(n int) ([]json.RawMessage, int64, error) {
 	r := bufio.NewReaderSize(rf, 64<<10)
 	var out []json.RawMessage
 	pos := b.offset
+	size := 0
 	for len(out) < n {
 		line, tooLong, complete, err := readLine(r)
 		if err == io.EOF && !complete {
@@ -113,6 +119,10 @@ func (b *Buffer) Peek(n int) ([]json.RawMessage, int64, error) {
 		if err != nil && err != io.EOF {
 			return out, pos, err
 		}
+		if len(out) > 0 && !tooLong && size+len(line.data) > MaxBatchBytes {
+			break // not consumed: it heads the next batch
+		}
+		size += len(line.data)
 		pos += int64(line.consumed)
 		if tooLong || len(bytes.TrimSpace(line.data)) == 0 {
 			if tooLong {
@@ -135,6 +145,13 @@ func (b *Buffer) Peek(n int) ([]json.RawMessage, int64, error) {
 type rawLine struct {
 	data     []byte
 	consumed int
+}
+
+// Offset is the byte offset of the oldest unacked line (the head of the next batch).
+func (b *Buffer) Offset() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.offset
 }
 
 // readLine reads one '\n'-terminated line without ever holding more than MaxLine bytes of it.

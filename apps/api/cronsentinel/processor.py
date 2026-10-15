@@ -60,6 +60,18 @@ def _parse_ts(v) -> datetime | None:
     return v if v.tzinfo else v.replace(tzinfo=UTC)
 
 
+def _int_or_none(v, lo: int = -(2**31), hi: int = 2**31 - 1) -> int | None:
+    """Client-supplied numbers: a string or out-of-range value used to raise mid-transaction (TypeError
+    on arithmetic, NumericValueOutOfRange in Postgres) and fail the whole message."""
+    if isinstance(v, bool):
+        return None
+    try:
+        n = int(v)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return n if lo <= n <= hi else None
+
+
 def scoped_execution_id(s, org, job_id, raw: str | None) -> str | None:
     """R39: execution ids are client-chosen (heartbeat JSON, agent events) but execution_events,
     execution_logs and executions are keyed on them *globally*. Two orgs using the same id (a
@@ -90,7 +102,9 @@ def process(s, ev: dict) -> dict | None:
         return None   # agent batches can carry kinds this path does not own (progress, k8s_event)
     server_ts = _parse_ts(ev.get("server_ts")) or datetime.now(UTC)
     agent_ts = _parse_ts(ev.get("agent_ts"))
-    meta = dict(ev.get("meta") or {})
+    meta = dict(ev.get("meta") or {}) if isinstance(ev.get("meta"), dict) else {}
+    ev = {**ev, "duration_ms": _int_or_none(ev.get("duration_ms"), 0, 2**63 - 1),
+          "exit_code": _int_or_none(ev.get("exit_code")), "sequence": _int_or_none(ev.get("sequence"), 0) or 0}
     if agent_ts and not (server_ts - MAX_PAST_SKEW <= agent_ts <= server_ts + MAX_FUTURE_SKEW):
         meta["agent_ts_rejected"] = agent_ts.isoformat()
         agent_ts = None
