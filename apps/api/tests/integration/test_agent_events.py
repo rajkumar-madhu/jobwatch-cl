@@ -56,7 +56,7 @@ def test_batch_resolves_by_token_and_fingerprint_and_drops_unknown(ingest, agent
         {"job_token": "nope", "kind": "success", "execution_id": "x", "sequence": 1, "agent_ts": _now()},
     ])
     assert r.status_code == 200, r.text
-    assert r.json() == {"accepted": 2, "dropped": 1}
+    assert r.json() == {"accepted": 2, "dropped": 1, "invalid": 0}
     from cronsentinel.db import system_session
     with system_session() as s:
         rows = dict(s.execute(text("SELECT id, status::text FROM executions WHERE id IN (:a, :b)"), {"a": e1, "b": e2}).all())
@@ -80,7 +80,7 @@ def test_start_and_success_in_one_batch_end_as_success(ingest, agent):
 def test_progress_events_are_stored(ingest, agent):
     eid = f"p-{uuid.uuid4().hex}"
     r = _post(ingest, agent, [{"job_token": agent["tok"], "kind": "progress", "execution_id": eid, "sequence": 3, "agent_ts": _now()}])
-    assert r.status_code == 200 and r.json() == {"accepted": 1, "dropped": 0}
+    assert r.status_code == 200 and r.json() == {"accepted": 1, "dropped": 0, "invalid": 0}
     from cronsentinel.db import system_session
     with system_session() as s:
         assert s.execute(text("SELECT count(*) FROM execution_events WHERE execution_id=:e AND kind='progress'"), {"e": eid}).scalar() == 1
@@ -105,7 +105,7 @@ def test_agent_cannot_resolve_another_orgs_job(ingest, agent):
                         {"o": other, "w": ws, "t": (tok := uuid.uuid4().hex)})
     try:
         r = _post(ingest, agent, [{"job_token": tok, "kind": "success", "execution_id": f"c-{uuid.uuid4().hex}", "sequence": 1, "agent_ts": _now()}])
-        assert r.json() == {"accepted": 0, "dropped": 1}
+        assert r.json() == {"accepted": 0, "dropped": 1, "invalid": 0}
     finally:
         with system_session() as s:
             s.execute(text("SELECT purge_org(:o)"), {"o": other}); s.execute(text("DELETE FROM organizations WHERE id=:o"), {"o": other})

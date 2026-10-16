@@ -1,5 +1,6 @@
 """R54: a run that exits 0 but breaks a job assertion is a failure — via every ingest path."""
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -53,8 +54,10 @@ def test_start_then_success_uses_measured_duration(env, org):
     api, ingest, h = env
     j = _job(api, h, org, ["duration < 1s"])
     t, eid = j["heartbeat_token"], f"run-{uuid.uuid4().hex[:8]}"
-    ingest.post(f"/api/v1/heartbeat/{t}", json={"status": "start", "execution_id": eid, "agent_ts": "2026-10-04T10:00:00Z"})
-    ingest.post(f"/api/v1/heartbeat/{t}", json={"status": "success", "execution_id": eid, "sequence": 1, "agent_ts": "2026-10-04T10:00:05Z"})
+    # Relative to now: the processor replaces an agent_ts more than 7 days old with server time.
+    t0 = datetime.now(UTC) - timedelta(minutes=1)
+    ingest.post(f"/api/v1/heartbeat/{t}", json={"status": "start", "execution_id": eid, "agent_ts": t0.isoformat()})
+    ingest.post(f"/api/v1/heartbeat/{t}", json={"status": "success", "execution_id": eid, "sequence": 1, "agent_ts": (t0 + timedelta(seconds=5)).isoformat()})
     r = [x for x in _runs(api, h, j["id"]) if x["id"]][0]
     assert r["status"] == "failed" and r["assertion_failures"] == ["duration < 1s (took 5 s)"]
 

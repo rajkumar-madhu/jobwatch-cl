@@ -142,7 +142,8 @@ def resolve_nats_host(url: str) -> str:
     if not addrs:
         raise BlockedDestination(f"{u.hostname} has no permitted address")
     userinfo = f"{u.username}:{u.password}@" if u.username else ""
-    return u._replace(netloc=f"{userinfo}{addrs[0]}:{port}").geturl()
+    host = f"[{addrs[0]}]" if ":" in addrs[0] else addrs[0]  # an IPv6 literal needs brackets before :port
+    return u._replace(netloc=f"{userinfo}{host}:{port}").geturl()
 
 
 def check_host(host: str, port: int) -> None:

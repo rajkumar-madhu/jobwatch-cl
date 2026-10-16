@@ -85,6 +85,12 @@ def test_resolve_nats_host_swaps_in_the_validated_address(monkeypatch):
     assert "93.184.216.34" in resolved and "broker.example.com" not in resolved
 
 
+def test_resolve_nats_host_brackets_an_ipv6_address(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(0, 0, 0, "", ("2606:2800:220:1::1", 4222, 0, 0))])
+    resolved = netguard.resolve_nats_host("nats://broker.example.com:4222/")
+    assert resolved == "nats://[2606:2800:220:1::1]:4222/"
+
+
 def test_resolve_nats_host_blocks_a_name_that_resolves_only_to_private_space(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(0, 0, 0, "", ("10.1.2.3", 4222))])
     with pytest.raises(netguard.BlockedDestination):

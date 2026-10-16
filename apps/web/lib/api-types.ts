@@ -2519,6 +2519,25 @@ export interface components {
             /** Restrict End */
             restrict_end?: string | null;
         };
+        /** LayerOut */
+        LayerOut: {
+            /** Name */
+            name: string;
+            /** Rotation */
+            rotation: string;
+            /** Shift Hours */
+            shift_hours?: number | null;
+            /** Handoff At */
+            handoff_at?: string | null;
+            /** Members */
+            members: components["schemas"]["MemberOut"][];
+            /** Restrict Days */
+            restrict_days?: number[] | null;
+            /** Restrict Start */
+            restrict_start?: string | null;
+            /** Restrict End */
+            restrict_end?: string | null;
+        };
         /**
          * LogHit
          * @description Loose by design: a log row's columns depend on the backing store.
@@ -2642,6 +2661,13 @@ export interface components {
              */
             environment_ids?: string[];
         };
+        /** MemberOut */
+        MemberOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+        };
         /**
          * MonitoringGapOut
          * @description R25: a period when the platform itself was not watching. Slots whose deadline fell inside it
@@ -2695,12 +2721,38 @@ export interface components {
             /** Client Secret */
             client_secret?: string | null;
         };
+        /** OnCallNow */
+        OnCallNow: {
+            /** User Id */
+            user_id?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Source */
+            source: string;
+        };
         /** OverrideIn */
         OverrideIn: {
             /**
              * User Id
              * Format: uuid
              */
+            user_id: string;
+            /**
+             * Starts At
+             * Format: date-time
+             */
+            starts_at: string;
+            /**
+             * Ends At
+             * Format: date-time
+             */
+            ends_at: string;
+        };
+        /** OverrideOut */
+        OverrideOut: {
+            /** Id */
+            id: string;
+            /** User Id */
             user_id: string;
             /**
              * Starts At
@@ -2751,6 +2803,15 @@ export interface components {
              */
             job_ids?: string[];
         };
+        /** PersonOut */
+        PersonOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Email */
+            email: string;
+        };
         /** PolicyIn */
         PolicyIn: {
             /** Name */
@@ -2767,6 +2828,19 @@ export interface components {
             delivery_channel_id: string;
             /** Steps */
             steps: components["schemas"]["StepIn"][];
+        };
+        /** PolicyOut */
+        PolicyOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Repeat Count */
+            repeat_count: number;
+            /** Delivery Channel Id */
+            delivery_channel_id: string;
+            /** Steps */
+            steps: components["schemas"]["StepOut"][];
         };
         /** ResolveIn */
         ResolveIn: {
@@ -2817,6 +2891,41 @@ export interface components {
              */
             enabled?: boolean;
         };
+        /** RunOut */
+        RunOut: {
+            /** Id */
+            id: string;
+            /** Status */
+            status: string;
+            /** Step */
+            step: number;
+            /** Cycle */
+            cycle: number;
+            /**
+             * Next At
+             * Format: date-time
+             */
+            next_at: string;
+            /** History */
+            history: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Incident Id */
+            incident_id?: string | null;
+            /** Job Id */
+            job_id?: string | null;
+            /** Job Name */
+            job_name?: string | null;
+            /** Condition */
+            condition?: string | null;
+            /** Policy */
+            policy: string;
+        };
         /** SamlIn */
         SamlIn: {
             /** Entity Id */
@@ -2842,6 +2951,24 @@ export interface components {
              * @description lowest first; later layers win
              */
             layers: components["schemas"]["LayerIn"][];
+        };
+        /** ScheduleOut */
+        ScheduleOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Tz */
+            tz: string;
+            /** Description */
+            description?: string | null;
+            /** Layers */
+            layers: components["schemas"]["LayerOut"][];
+            on_call_now: components["schemas"]["OnCallNow"];
+            /** Timeline */
+            timeline?: components["schemas"]["ShiftOut"][] | null;
+            /** Overrides */
+            overrides?: components["schemas"]["OverrideOut"][] | null;
         };
         /**
          * ScimGroupOut
@@ -2940,6 +3067,25 @@ export interface components {
             p50_ms?: number | null;
             /** P95 Ms */
             p95_ms?: number | null;
+        };
+        /** ShiftOut */
+        ShiftOut: {
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /** User Id */
+            user_id?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Source */
+            source: string;
         };
         /** SignalDeliveryOut */
         SignalDeliveryOut: {
@@ -3150,6 +3296,15 @@ export interface components {
              * Targets
              * @description [{"type": "schedule"|"user", "id": "…"}]
              */
+            targets: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** StepOut */
+        StepOut: {
+            /** Delay Min */
+            delay_min: number;
+            /** Targets */
             targets: {
                 [key: string]: unknown;
             }[];
@@ -7095,7 +7250,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ScheduleOut"][];
                 };
             };
             /** @description Validation Error */
@@ -7169,7 +7324,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ScheduleOut"];
                 };
             };
             /** @description Validation Error */
@@ -7347,7 +7502,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["PolicyOut"][];
                 };
             };
             /** @description Validation Error */
@@ -7491,7 +7646,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["RunOut"][];
                 };
             };
             /** @description Validation Error */
@@ -7559,7 +7714,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["PersonOut"][];
                 };
             };
             /** @description Validation Error */

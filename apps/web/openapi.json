@@ -9262,7 +9262,13 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ScheduleOut"
+                  },
+                  "title": "Response List Schedules Api V1 Oncall Schedules Get"
+                }
               }
             }
           },
@@ -9448,7 +9454,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleOut"
+                }
               }
             }
           },
@@ -9899,7 +9907,13 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PolicyOut"
+                  },
+                  "title": "Response List Policies Api V1 Oncall Policies Get"
+                }
               }
             }
           },
@@ -10256,7 +10270,13 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RunOut"
+                  },
+                  "title": "Response List Escalations Api V1 Oncall Escalations Get"
+                }
               }
             }
           },
@@ -10425,7 +10445,13 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PersonOut"
+                  },
+                  "title": "Response People Api V1 Oncall People Get"
+                }
               }
             }
           },
@@ -12583,6 +12609,91 @@
         ],
         "title": "LayerIn"
       },
+      "LayerOut": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "rotation": {
+            "type": "string",
+            "title": "Rotation"
+          },
+          "shift_hours": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shift Hours"
+          },
+          "handoff_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Handoff At"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/MemberOut"
+            },
+            "type": "array",
+            "title": "Members"
+          },
+          "restrict_days": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restrict Days"
+          },
+          "restrict_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restrict Start"
+          },
+          "restrict_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restrict End"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "rotation",
+          "members"
+        ],
+        "title": "LayerOut"
+      },
       "LogHit": {
         "properties": {},
         "additionalProperties": true,
@@ -12817,6 +12928,24 @@
         "type": "object",
         "title": "MaintenanceScope"
       },
+      "MemberOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "MemberOut"
+      },
       "MonitoringGapOut": {
         "properties": {
           "id": {
@@ -12955,6 +13084,41 @@
         ],
         "title": "OidcIn"
       },
+      "OnCallNow": {
+        "properties": {
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "title": "OnCallNow"
+      },
       "OverrideIn": {
         "properties": {
           "user_id": {
@@ -12980,6 +13144,52 @@
           "ends_at"
         ],
         "title": "OverrideIn"
+      },
+      "OverrideOut": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Id"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "User Id"
+          },
+          "starts_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Starts At"
+          },
+          "ends_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Ends At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "starts_at",
+          "ends_at"
+        ],
+        "title": "OverrideOut"
       },
       "OverviewOut": {
         "properties": {
@@ -13088,6 +13298,29 @@
         ],
         "title": "PageIn"
       },
+      "PersonOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "email"
+        ],
+        "title": "PersonOut"
+      },
       "PolicyIn": {
         "properties": {
           "name": {
@@ -13125,6 +13358,42 @@
           "steps"
         ],
         "title": "PolicyIn"
+      },
+      "PolicyOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "repeat_count": {
+            "type": "integer",
+            "title": "Repeat Count"
+          },
+          "delivery_channel_id": {
+            "type": "string",
+            "title": "Delivery Channel Id"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/StepOut"
+            },
+            "type": "array",
+            "title": "Steps"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "repeat_count",
+          "delivery_channel_id",
+          "steps"
+        ],
+        "title": "PolicyOut"
       },
       "ResolveIn": {
         "properties": {
@@ -13223,6 +13492,120 @@
         ],
         "title": "RuleIn"
       },
+      "RunOut": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "step": {
+            "type": "integer",
+            "title": "Step"
+          },
+          "cycle": {
+            "type": "integer",
+            "title": "Cycle"
+          },
+          "next_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Next At"
+          },
+          "history": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "History"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "incident_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Incident Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "job_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Name"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "policy": {
+            "type": "string",
+            "title": "Policy"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "step",
+          "cycle",
+          "next_at",
+          "history",
+          "created_at",
+          "policy"
+        ],
+        "title": "RunOut"
+      },
       "SamlIn": {
         "properties": {
           "entity_id": {
@@ -13292,6 +13675,80 @@
           "layers"
         ],
         "title": "ScheduleIn"
+      },
+      "ScheduleOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "tz": {
+            "type": "string",
+            "title": "Tz"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "layers": {
+            "items": {
+              "$ref": "#/components/schemas/LayerOut"
+            },
+            "type": "array",
+            "title": "Layers"
+          },
+          "on_call_now": {
+            "$ref": "#/components/schemas/OnCallNow"
+          },
+          "timeline": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ShiftOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeline"
+          },
+          "overrides": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OverrideOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overrides"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "tz",
+          "layers",
+          "on_call_now"
+        ],
+        "title": "ScheduleOut"
       },
       "ScimGroupOut": {
         "properties": {
@@ -13502,6 +13959,53 @@
           "missed"
         ],
         "title": "SeriesPoint"
+      },
+      "ShiftOut": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Start"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "End"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "start",
+          "end",
+          "source"
+        ],
+        "title": "ShiftOut"
       },
       "SignalDeliveryOut": {
         "properties": {
@@ -14040,6 +14544,28 @@
           "targets"
         ],
         "title": "StepIn"
+      },
+      "StepOut": {
+        "properties": {
+          "delay_min": {
+            "type": "integer",
+            "title": "Delay Min"
+          },
+          "targets": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Targets"
+          }
+        },
+        "type": "object",
+        "required": [
+          "delay_min",
+          "targets"
+        ],
+        "title": "StepOut"
       },
       "StreamIn": {
         "properties": {

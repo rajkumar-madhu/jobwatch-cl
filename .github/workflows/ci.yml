@@ -6,10 +6,12 @@ jobs:
     services:
       postgres: {image: postgres:16-alpine, env: {POSTGRES_USER: cronsentinel, POSTGRES_PASSWORD: cronsentinel, POSTGRES_DB: cronsentinel}, ports: ["5432:5432"], options: --health-cmd pg_isready --health-interval 5s --health-retries 10}
       redis: {image: "redis:7-alpine", ports: ["6379:6379"]}
-      nats: {image: "nats:2.10-alpine", ports: ["4222:4222"], options: --entrypoint "/nats-server -js"}
     env: {DATABASE_URL: postgresql+psycopg://cronsentinel:cronsentinel@localhost:5432/cronsentinel, JOBWATCH_APP_DB_PASSWORD: app}   # owner URL: migrations only; the test step overrides it with the app role
     steps:
       - uses: actions/checkout@v4
+      # NATS needs `-js` for JetStream. Service containers can't take command args (an --entrypoint
+      # with arguments is read as one path), so start it here instead.
+      - run: docker run -d --name nats -p 4222:4222 nats:2.10-alpine -js
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       # migrations run as the owner and provision the app role; tests run AS the app role so RLS is real
@@ -73,7 +75,7 @@ jobs:
       - run: |
           cd tools/ui-review && uvicorn mock_api:app --port 8000 &
           cd apps/web && cp -r .next/static .next/standalone/.next/ && PORT=3000 node .next/standalone/server.js &   # R39: output=standalone
-          npx wait-on http://localhost:8000/api/v1/jobs http://localhost:3000 -t 60000
+          npx wait-on http-get://localhost:8000/api/v1/jobs http-get://localhost:3000 -t 60000   # GET: the mock API answers HEAD with 405
         working-directory: .
       - run: cd apps/web && npm run test:e2e
       - uses: actions/upload-artifact@v4
